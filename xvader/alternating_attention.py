@@ -92,82 +92,72 @@ class AlternatingAttention(nn.Module):
 
         self.use_reentrant = False
 
-    def forward(self, images, patch_tokens: torch.Tensor) -> Tuple[List[torch.Tensor], int]:
+    def forward(self, patch_tokens: torch.Tensor, patch_h:int, patch_w:int, device: torch.device) -> List[torch.Tensor]:
         """
         Args:
-            patch_token (torch.Tensor): output from patch_embed.
-
+            patch_tokens (torch.Tensor): shape (S, P, C) # from 4th layer
         Returns:
-            (list[torch.Tensor], int):
-                The list of outputs from the attention blocks,
-                and the patch_start_idx indicating where patch tokens begin.
+            final_tokens_concat (torch.Tensor): shape (S, P_A, 2*C) # for camera_head
+            patch_tokens (torch.Tensor): shape (S, P, C) # for 4th layer
         """
-        if len(images.shape) == 4: # (S, C, H, W)
-            images = images.unsqueeze(0) # (1, S, C, H, W)
-        B, S, C_in, H, W = images.shape
-        if isinstance(patch_tokens, dict):
-            patch_tokens = patch_tokens["x_norm_patchtokens"]
+        assert patch_tokens.dim() == 3, "Expected input shape (S, P, C)"
+        S, P, C = patch_tokens.shape
         
         # Expand camera and register tokens to match batch size and sequence length
-        camera_token = slice_expand_and_flatten(self.camera_token, B, S)
-        register_token = slice_expand_and_flatten(self.register_token, B, S)
+        camera_token = slice_expand_and_flatten(self.camera_token, 1, S)
+        register_token = slice_expand_and_flatten(self.register_token, 1, S)
 
         # Concatenate special tokens with patch tokens
         tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)
 
         pos = None
         if self.rope is not None:
-            pos = self.position_getter(B * S, H // self.patch_size, W // self.patch_size, device=images.device)
+            pos = self.position_getter(S, patch_h, patch_w, device=device)
 
         if self.patch_start_idx > 0:
             # do not use position embedding for special tokens (camera and register tokens)
             # so set pos to 0 for the special tokens
             pos = pos + 1
-            pos_special = torch.zeros(B * S, self.patch_start_idx, 2).to(images.device).to(pos.dtype)
+            pos_special = torch.zeros(S, self.patch_start_idx, 2).to(device).to(pos.dtype)
             pos = torch.cat([pos_special, pos], dim=1)
         
         # update P because we added special tokens
-        _, P, C = tokens.shape
+        _, P_A, C = tokens.shape # Patch + Additional tokens (camera and register)
 
         frame_idx = 0
         global_idx = 0
-        output_list = []
+        tokens_frame = []
+        tokens_global = []
 
         for _ in range(self.aa_block_num):
             for attn_type in self.aa_order:
                 if attn_type == "frame":
-                    tokens, frame_idx, frame_intermediates = self._process_frame_attention(
-                        tokens, B, S, P, C, frame_idx, pos=pos
+                    tokens, frame_idx, tokens_frame = self._process_frame_attention(
+                        tokens, S, P_A, C, frame_idx, pos=pos
                     )
                 elif attn_type =="global":
-                    tokens, global_idx, global_intermediates = self._process_global_attention(
-                        tokens, B, S, P, C, global_idx, pos=pos
+                    tokens, global_idx, tokens_global = self._process_global_attention(
+                        tokens, S, P_A, C, global_idx, pos=pos
                     )
                 else:
                     raise ValueError(f"Unknown attention type: {attn_type}")
                 
-            for i in range(len(frame_intermediates)):
-                # concat frame and global intermediates, [B x S x P x 2C]
-                concat_inter = torch.cat([frame_intermediates[i], global_intermediates[i]], dim=-1)
-                output_list.append(concat_inter)
+        final_tokens_concat = torch.cat([tokens_frame, tokens_global], dim=-1) # (S, P_A, 2C)
+        camera_tokens = final_tokens_concat[:,0,:] # (S, 2C)
+        patch_tokens = tokens[:, self.patch_start_idx:, :] # (S, P, C)
 
-        del concat_inter
-        del frame_intermediates
-        del global_intermediates
-        return output_list, self.patch_start_idx
-    
-    def _process_frame_attention(self, tokens, B, S, P, C, frame_idx, pos=None):
+        return camera_tokens, patch_tokens
+
+    def _process_frame_attention(self, tokens, S, N, C, frame_idx, pos=None):
         """
         Process frame attention blocks. We keep tokens in shape (B*S, P, C).
         """
         # If needed, reshape tokens or positions:
-        if tokens.shape != (B * S, P, C):
-            tokens = tokens.view(B, S, P, C).view(B * S, P, C)
+        if tokens.shape != (S, N, C):
+            tokens = tokens.view(S, N, C)
 
-        if pos is not None and pos.shape != (B * S, P, 2):
-            pos = pos.view(B, S, P, 2).view(B * S, P, 2)
-
-        intermediates = []
+        if pos is not None and pos.shape != (S, N, 2):
+            pos = pos.view(S, N, 2)
 
         # by default, self.aa_block_size=1, which processes one block at a time
         for _ in range(self.aa_block_size):
@@ -176,21 +166,19 @@ class AlternatingAttention(nn.Module):
             else:
                 tokens = self.frame_blocks[frame_idx](tokens, pos=pos)
             frame_idx += 1
-            intermediates.append(tokens.view(B, S, P, C))
 
-        return tokens, frame_idx, intermediates
+        tokens_frame = tokens.view(S, N, C)
+        return tokens, frame_idx, tokens_frame
 
-    def _process_global_attention(self, tokens, B, S, P, C, global_idx, pos=None):
+    def _process_global_attention(self, tokens, S, N, C, global_idx, pos=None):
         """
         Process global attention blocks. We keep tokens in shape (B, S*P, C).
         """
-        if tokens.shape != (B, S * P, C):
-            tokens = tokens.view(B, S, P, C).view(B, S * P, C)
+        if tokens.shape != (1, S * N, C):
+            tokens = tokens.view(S, N, C).view(1, S * N, C)
 
-        if pos is not None and pos.shape != (B, S * P, 2):
-            pos = pos.view(B, S, P, 2).view(B, S * P, 2)
-
-        intermediates = []
+        if pos is not None and pos.shape != (1, S * N, 2):
+            pos = pos.view(1, S * N, 2)
 
         # by default, self.aa_block_size=1, which processes one block at a time
         for _ in range(self.aa_block_size):
@@ -199,9 +187,11 @@ class AlternatingAttention(nn.Module):
             else:
                 tokens = self.global_blocks[global_idx](tokens, pos=pos)
             global_idx += 1
-            intermediates.append(tokens.view(B, S, P, C))
 
-        return tokens, global_idx, intermediates
+
+        tokens = tokens.view(S, N, C)
+        tokens_global = tokens.view(S, N, C)
+        return tokens, global_idx, tokens_global
     
 def slice_expand_and_flatten(token_tensor, B, S):
     """

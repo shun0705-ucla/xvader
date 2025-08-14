@@ -5,9 +5,8 @@ import torch.nn.functional as F
 from torchvision.transforms import Compose
 from typing import List
 
-from third_party.Depth_Anything_V2.depth_anything_v2.util.blocks import FeatureFusionBlock, _make_scratch
-from third_party.Depth_Anything_V2.depth_anything_v2.util.transform import Resize, NormalizeImage, PrepareForNet
-
+from third_party.Depth_Anything_V2.metric_depth.depth_anything_v2.util.blocks import FeatureFusionBlock, _make_scratch
+from third_party.Depth_Anything_V2.metric_depth.depth_anything_v2.util.transform import Resize, NormalizeImage, PrepareForNet
 
 def _make_fusion_block(features, use_bn, size=None):
     return FeatureFusionBlock(
@@ -34,20 +33,25 @@ class ConvBlock(nn.Module):
     def forward(self, x):
         return self.conv_block(x)
 
-
 class DPTHead(nn.Module):
+    '''
+    DPT for dense depth prediction
+    
+    '''
     def __init__(
         self, 
         in_channels, 
         features=256, 
         use_bn=False, 
         out_channels=[256, 512, 1024, 1024], 
-        use_clstoken=False
+        use_clstoken=False,
+        patch_size: int = 14,
     ):
         super(DPTHead, self).__init__()
         
         self.use_clstoken = use_clstoken
-        
+        self.patch_size = patch_size
+
         self.projects = nn.ModuleList([
             nn.Conv2d(
                 in_channels=in_channels,
@@ -105,7 +109,9 @@ class DPTHead(nn.Module):
         head_features_1 = features
         head_features_2 = 32
         
+        
         self.scratch.output_conv1 = nn.Conv2d(head_features_1, head_features_1 // 2, kernel_size=3, stride=1, padding=1)
+        
         self.scratch.output_conv2 = nn.Sequential(
             nn.Conv2d(head_features_1 // 2, head_features_2, kernel_size=3, stride=1, padding=1),
             nn.ReLU(True),
@@ -114,18 +120,14 @@ class DPTHead(nn.Module):
             nn.Identity(),
         )
     
-    def forward(self, features: List[torch.Tensor], patch_h: int, patch_w: int) -> torch.Tensor:
+    def forward(self, features: List[torch.Tensor], patch_h, patch_w):
         
-        if isinstance(features, torch.Tensor):
-            features = [features[:, i] for i in range(features.shape[1])]
-            # features: (B, 4, N_patches, D) -> [layer1(B,N,D), layer2(B,N,D), layer3(B,N,D), layer4(B,N,D)]
-        
+        L, B, S, P, C = features.shape
+        features = features.view(L, B*S, P, C)    
         out = []     
         for i, x in enumerate(features):
-            print(f"Layer {i+1} output shape: {x.shape}")
-            # x: (B, N, D) → (B, D, patch_h, patch_w)
+            # x: (B*S, P, C) -> (B*S), C, P) -> (B*S, C, patch_h, patch_w)
             x = x.permute(0, 2, 1).reshape(x.shape[0], x.shape[-1], patch_h, patch_w)
-
             x = self.projects[i](x)
             x = self.resize_layers[i](x)
 
@@ -144,7 +146,9 @@ class DPTHead(nn.Module):
         path_1 = self.scratch.refinenet1(path_2, layer_1_rn)
         
         out = self.scratch.output_conv1(path_1)
-        out = F.interpolate(out, (int(patch_h * 14), int(patch_w * 14)), mode="bilinear", align_corners=True)
+        out = F.interpolate(out, (int(self.patch_size*patch_h), int(self.patch_size*patch_w)), mode="bilinear", align_corners=True)
         out = self.scratch.output_conv2(out)
-        
+        out = out.view(B, S, *out.shape[1:])
+        out = out.permute(0, 1, 3, 4, 2)
+
         return out
