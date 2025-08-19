@@ -13,7 +13,7 @@ import torch.nn.functional as F
 
 from third_party.vggt.vggt.layers import Mlp
 from third_party.vggt.vggt.layers.block import Block
-from third_party.vggt.vggt.heads.head_act import activate_pose
+from third_party.vggt.vggt.heads.head_act import activate_pose, base_pose_act
 
 
 class CameraHead(nn.Module):
@@ -39,6 +39,10 @@ class CameraHead(nn.Module):
 
         if pose_encoding_type == "absT_quaR_FoV":
             self.target_dim = 9
+            self.use_fov = True
+        elif pose_encoding_type == "absT_quaR":
+            self.target_dim = 7
+            self.use_fov = False
         else:
             raise ValueError(f"Unsupported camera encoding type: {pose_encoding_type}")
 
@@ -128,12 +132,51 @@ class CameraHead(nn.Module):
                 pred_pose_enc = pred_pose_enc + pred_pose_enc_delta
 
             # Apply final activation functions for translation, quaternion, and field-of-view.
-            activated_pose = activate_pose(
-                pred_pose_enc, trans_act=self.trans_act, quat_act=self.quat_act, fl_act=self.fl_act
-            )
+            if self.use_fov:
+                activated_pose = activate_pose(
+                    pred_pose_enc, trans_act=self.trans_act, quat_act=self.quat_act, fl_act=self.fl_act
+                )
+            else:
+                activated_pose = self._activate_pose_no_fov(pred_pose_enc)
+            
             pred_pose_enc_list.append(activated_pose)
-
         return pred_pose_enc_list
+    
+    def _activate_pose_no_fov(self,
+                            pred_pose_enc: torch.Tensor,
+                            trans_act: str = "linear",
+                            quat_act: str = "linear",
+                            eps: float = 1e-8) -> torch.Tensor:
+        """
+        Activate and normalize pose parameters without FoV.
+
+        Args:
+            pred_pose_enc: (..., 7) tensor = [tx, ty, tz, qx, qy, qz, qw]
+            trans_act: activation for translation (uses base_pose_act)
+            quat_act: activation for quaternion (uses base_pose_act)
+            eps: small constant to avoid div-by-zero on quaternion norm
+
+        Returns:
+            (..., 7) tensor = [T (3), q (4 normalized)]
+        """
+        # Split
+        T   = pred_pose_enc[..., :3]     # (…, 3)
+        quat = pred_pose_enc[..., 3:7]   # (…, 4)
+
+        # Apply the same activation machinery you already use
+        T    = base_pose_act(T,   trans_act)
+        quat = base_pose_act(quat, quat_act)
+
+        # Normalize quaternion to unit norm (numerically safe)
+        q_norm = quat.norm(dim=-1, keepdim=True).clamp_min(eps)
+        quat = quat / q_norm
+
+        # Optional: canonicalize sign so qw >= 0 (removes 2x ambiguity)
+        sign = torch.where(quat[..., 3:4] < 0, -1.0, 1.0).to(quat.dtype)
+        quat = quat * sign
+
+        # Re-pack
+        return torch.cat([T, quat], dim=-1)
 
 
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:

@@ -1,7 +1,3 @@
-[submodule "third_party/Depth_Anything_V2"]
-    path = third_party/Depth_Anything_V2
-    url = https://github.com/DepthAnything/Depth-Anything-V2
-
 [submodule "third_party/vggt"]
     path = third_party/vggt
     url = https://github.com/facebookresearch/vggt
