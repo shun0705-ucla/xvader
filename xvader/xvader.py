@@ -5,19 +5,18 @@ import torch.nn.functional as F
 from dataclasses import dataclass
 
 from third_party.UniDepth.unidepth.models.backbones.dinov2 import _make_dinov2_model
-from .dpt import DPTHead
+from third_party.vggt.vggt.layers.vision_transformer import vit_small, vit_base, vit_large
 from .metric_depth_head import MetricDepthHead
 from .camera_embed import CameraEmbedding
-from third_party.UniDepth.unidepth.utils.camera import BatchCamera, Camera, Pinhole
+from .camera_model import Pinhole
+#from third_party.UniDepth.unidepth.utils.camera import BatchCamera, Camera, Pinhole
 from third_party.vggt.vggt.utils.rotation import quat_to_mat
 
 from .xvader_utils import flat_to_map, map_to_flat
 
 
 from .camera_head import CameraHead
-#from .dpt import DPTHead
 from .alternating_attention import AlternatingAttention
-from .feature_attention import FeatureAttention
 
 _RESNET_MEAN = [0.485, 0.456, 0.406]
 _RESNET_STD = [0.229, 0.224, 0.225]
@@ -32,6 +31,7 @@ class Xvader(nn.Module):
         super(Xvader, self).__init__()
 
         '''
+        '''
         self.intermediate_layer_idx_list = {
             'vits': [2, 5, 8, 11],
             'vitb': [2, 5, 8, 11],          
@@ -44,7 +44,7 @@ class Xvader(nn.Module):
             raise ValueError(f"Unknown encoder '{encoder}'. Supported: {list(self.intermediate_layer_idx_list.keys())}")
         '''
         # patch embed
-        #self.pretrained = DINOv2(model_name=encoder)
+        '''
         self.encoder = _make_dinov2_model(arch_name = "vit_large",
                                              img_size = 518,
                                              patch_size = 14,
@@ -53,34 +53,44 @@ class Xvader(nn.Module):
                                              block_chunks = 0,
                                              pretrained = None,
                                              output_idx = [5, 11, 17, 23],
-                                             num_register_tokens = 0,
+                                             num_register_tokens = 4,
                                              drop_path_rate = 0.0,
                                              use_norm = True,
                                              export = False,
                                              interpolate_offset = 0.0,
                                              frozen_stages = 0)
-        self.embed_dim = self.encoder.embed_dim
+        '''
+        self.encoder = vit_large(img_size=518,
+                                 patch_size=14,
+                                 num_register_tokens=4,
+                                 interpolate_antialias=True,
+                                 interpolate_offset=0.0,
+                                 block_chunks=0,
+                                 init_values=1.0)
+        '''
+        self.embed_dim = 1024
         self.patch_size = self.encoder.patch_size
 
 
         # adapter for camera embed
         self.hidden_dim = self.embed_dim // 2
         self.dimension_adapter = nn.ModuleList([])
-        for i in range(len(self.encoder.depths)):
+        for i in range(4):
             self.dimension_adapter.append(nn.Linear(self.embed_dim, self.hidden_dim))
         
+        self.dimension_adapter_camera = nn.Linear(self.embed_dim, self.hidden_dim)
+
         # camera embed
-        self.camera_embed = CameraEmbedding(hidden_dim = self.hidden_dim,
-                                            num_layers = len(self.encoder.depths))
+        self.camera_embed = CameraEmbedding(hidden_dim = self.embed_dim,
+                                            num_layers = 4)
 
         # alternating attention
-        self.alternating_attention = AlternatingAttention(embed_dim=self.hidden_dim,
-                                                          depth=12,
-                                                          num_heads=self.hidden_dim//64,
+        self.alternating_attention = AlternatingAttention(embed_dim=self.embed_dim,
+                                                          depth=24,
+                                                          num_heads=self.embed_dim//64,
                                                           patch_size=self.patch_size)
         
-        #self.depth_head = DPTHead(self.embed_dim, self.dpt_config.features, use_bn, out_channels=self.dpt_config.out_channels, use_clstoken=use_clstoken)        
-        self.camera_head = CameraHead(dim_in=2*self.hidden_dim, pose_encoding_type = "absT_quaR")
+        self.camera_head = CameraHead(dim_in=self.hidden_dim, pose_encoding_type = "absT_quaR")
         self.depth_head = MetricDepthHead(hidden_dim=self.hidden_dim)
         
         
@@ -95,20 +105,26 @@ class Xvader(nn.Module):
         if len(images.shape) == 4: # (S, C, H, W)
             images = images.unsqueeze(0) # (1, S, C, H, W)
         B, S, C_in, H, W = images.shape
+
         if C_in != 3:
             raise ValueError(f"Expected 3 input channels, got {C_in}")
         patch_h, patch_w = images.shape[-2] // self.patch_size, images.shape[-1] // self.patch_size
-        
+
         # 1. patch & embed by DINOv2   
         # Normalize images and reshape for patch embed
         #images = (images - self._resnet_mean) / self._resnet_std
         images = images.view(B * S, C_in, H, W)
+
         # patch_tokens_list
-        patch_tokens_list_all, cls_token_list_all = self.encoder(images)
-        patch_tokens_list = [patch_tokens_list_all[i] for i in self.encoder.depths] # extract [5, 11, 17, 23] layers
-        for i, dimension_adapter in enumerate(self.dimension_adapter):
-            patch_tokens_list[i] = dimension_adapter(patch_tokens_list[i]) # 1024 -> 512
-            patch_tokens_list[i] = patch_tokens_list[i].view(B*S, patch_h*patch_w, self.hidden_dim)
+        patch_tokens_list = list(self.encoder.get_intermediate_layers(images, {5, 11, 17, 23}))
+        #for i in range(len(patch_tokens_list)):
+        #    patch_tokens_list[i] = patch_tokens_list[i].view(B, S, *patch_tokens_list[i].shape[-2:]) #(B, S, P, D)
+
+        # dimension_adapter
+        #for i, dimension_adapter in enumerate(self.dimension_adapter):
+        #    patch_tokens_list[i] = dimension_adapter(patch_tokens_list[i]) # 1024 -> 512
+        #    patch_tokens_list[i] = patch_tokens_list[i].view(B*S, patch_h*patch_w, self.hidden_dim)
+        
 
         # 0. Process intrinsics
         if len(intrinsics.shape) == 3: # (S, 3, 3)
@@ -125,36 +141,42 @@ class Xvader(nn.Module):
         conditioned_tokens_list = self.camera_embed(patch_tokens_list, rays_embedding, patch_h, patch_w)    
 
         # 3. Update last layer by alternating attention (from VGGT)
-        tokens_last_layer = conditioned_tokens_list[-1] #(B*S, P, D)
-        # Separate Batch and Sequence for alternating attention
-        tokens_last_layer = tokens_last_layer.view(B, S, *tokens_last_layer.shape[-2:])
-        camera_tokens, tokens_last_layer = self.alternating_attention(tokens_last_layer, patch_h, patch_w, images.device)
+        for i in range(len(conditioned_tokens_list)):
+            conditioned_tokens_list[i] = conditioned_tokens_list[i].view(B, S, *conditioned_tokens_list[i].shape[-2:])
+        camera_tokens, conditioned_tokens_list[-1] = self.alternating_attention(conditioned_tokens_list[-1], patch_h, patch_w, images.device)
+
 
         # 4. prediction heads
         predictions = {}
 
         if self.camera_head is not None:
-            pose_enc_list = self.camera_head(camera_tokens)
-            pose_encoding = pose_enc_list[-1]
+            camera_tokens_red = self.dimension_adapter_camera(camera_tokens)
+            pose_enc_list = self.camera_head(camera_tokens_red)
+            predictions["pose_enc"] = pose_enc_list[-1]
+            predictions["pose_enc_list"] = pose_enc_list
+            
             # pose_encoding to extrinsics
-            T = pose_encoding[..., :3]
-            quat = pose_encoding[..., 3:7]
-            R = quat_to_mat(quat)
-            extrinsics = torch.cat([R, T[..., None]], dim=-1)
-            predictions["extrinsic"] = extrinsics
+            #T = pose_encoding[..., :3]
+            #quat = pose_encoding[..., 3:7]
+            #R = quat_to_mat(quat)
+            #extrinsics = torch.cat([R, T[..., None]], dim=-1)
+            #predictions["extrinsic"] = extrinsics
 
         if self.depth_head is not None:
+            conditioned_tokens_list_red = []
+            for i, dimension_adapter in enumerate(self.dimension_adapter):
+                conditioned_tokens_list_red.append(dimension_adapter(conditioned_tokens_list[i]))
             self.depth_head.set_input_feature_shapes(patch_h, patch_w)
             self.depth_head.set_original_shapes(H,W)
-            depth_radius, confidence = self.depth_head(conditioned_tokens_list)
+            depth_radius, confidence = self.depth_head(conditioned_tokens_list_red)
             # project depth_radius to depth_map
             local_points = rays * depth_radius # (B*S, 3, H, W) * (B*S, 1, H, W) -> (B*S, 3, H, W)
             local_points = local_points.view(B, S, 3, H, W)
-            predictions["depth"] = local_points[:, :, -1:] # extract z-axis
+            predictions["depth"] = local_points[:, :, -1:].permute(0, 1, 3, 4, 2) # extract z-axis (B, S, 1, H, W) -> (B, S, H, W, 1)
             predictions["local_points"] = local_points
 
             confidence = confidence.view(B,S,1,H,W)
-            predictions["confidence"] = confidence
+            predictions["depth_conf"] = confidence.permute(0, 1, 3, 4, 2).squeeze(4) # (B, S, 1, H, W) -> (B, S, H, W)
 
 
         
@@ -198,7 +220,7 @@ class Xvader(nn.Module):
         K_resized = _scale_intrinsics(intrinsics, sx=sx, sy=sy)
 
         outputs = self.forward(images_resized, K_resized)
-        depth = _resize_back(outputs["depth"])
+        depth = _resize_back(outputs["depth"].permute(0,1,4,2,3))
         return depth
     
 

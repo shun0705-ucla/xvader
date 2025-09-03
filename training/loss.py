@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from dataclasses import dataclass
-from vggt.utils.pose_enc import extri_intri_to_pose_encoding
+from third_party.vggt.vggt.utils.pose_enc import extri_intri_to_pose_encoding
 from train_utils.general import check_and_fix_inf_nan
 from math import ceil, floor
 
@@ -56,12 +56,14 @@ class MultitaskLoss(torch.nn.Module):
         # Depth estimation loss - if depth maps are predicted
         if "depth" in predictions:
             depth_loss_dict = compute_depth_loss(predictions, batch, **self.depth)
-            depth_loss = depth_loss_dict["loss_conf_depth"] + depth_loss_dict["loss_reg_depth"] + depth_loss_dict["loss_grad_depth"]
+            depth_loss = 0.1 * depth_loss_dict["loss_conf_depth"] + depth_loss_dict["loss_reg_depth"] + depth_loss_dict["loss_grad_depth"]
+            #depth_loss = depth_loss_dict["loss_reg_depth"]
             depth_loss = depth_loss * self.depth["weight"]
             total_loss = total_loss + depth_loss
             loss_dict.update(depth_loss_dict)
 
         # 3D point reconstruction loss - if world points are predicted
+        '''
         if "world_points" in predictions:
             point_loss_dict = compute_point_loss(predictions, batch, **self.point)
             point_loss = point_loss_dict["loss_conf_point"] + point_loss_dict["loss_reg_point"] + point_loss_dict["loss_grad_point"]
@@ -72,6 +74,7 @@ class MultitaskLoss(torch.nn.Module):
         # Tracking loss - not cleaned yet, dirty code is at the bottom of this file
         if "track" in predictions:
             raise NotImplementedError("Track loss is not cleaned up yet")
+        '''
         
         loss_dict["objective"] = total_loss
 
@@ -83,7 +86,7 @@ def compute_camera_loss(
     batch_data,             # ground truth and mask batch dict
     loss_type="l1",         # "l1" or "l2" loss
     gamma=0.6,              # temporal decay weight for multi-stage training
-    pose_encoding_type="absT_quaR_FoV",
+    pose_encoding_type="absT_quaR_FoV", # withoutFoV
     weight_trans=1.0,       # weight for translation loss
     weight_rot=1.0,         # weight for rotation loss
     weight_focal=0.5,       # weight for focal length loss
@@ -127,7 +130,8 @@ def compute_camera_loss(
             loss_T_stage, loss_R_stage, loss_FL_stage = camera_loss_single(
                 pred_pose_stage[valid_frame_mask].clone(),
                 gt_pose_encoding[valid_frame_mask].clone(),
-                loss_type=loss_type
+                loss_type=loss_type,
+                pose_encoding_type="absT_quaR"
             )
         # Accumulate weighted losses across stages
         total_loss_T += loss_T_stage * stage_weight
@@ -154,7 +158,7 @@ def compute_camera_loss(
         "loss_FL": avg_loss_FL
     }
 
-def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1"):
+def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1", pose_encoding_type=None):
     """
     Computes translation, rotation, and focal loss for a batch of pose encodings.
     
@@ -173,13 +177,33 @@ def camera_loss_single(pred_pose_enc, gt_pose_enc, loss_type="l1"):
     if loss_type == "l1":
         # Translation: first 3 dims; Rotation: next 4 (quaternion); Focal/Intrinsics: last dims
         loss_T = (pred_pose_enc[..., :3] - gt_pose_enc[..., :3]).abs()
+        print("pred_pose_enc:", pred_pose_enc[..., :3].detach().cpu().float().numpy())
+        print("gt_pose_enc:", gt_pose_enc[..., :3].detach().cpu().numpy())
+
         loss_R = (pred_pose_enc[..., 3:7] - gt_pose_enc[..., 3:7]).abs()
-        loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).abs()
+        print("pred_pose_enc:", pred_pose_enc[..., 3:7].detach().to(torch.float16).cpu().numpy())
+        print("gt_pose_enc:", gt_pose_enc[..., 3:7].detach().to(torch.float16).cpu().numpy())
+        if pose_encoding_type == "absT_quaR":
+            loss_FL = torch.zeros((), dtype=pred_pose_enc.dtype, device=pred_pose_enc.device)
+        else:
+            loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).abs()
     elif loss_type == "l2":
         # L2 norm for each component
         loss_T = (pred_pose_enc[..., :3] - gt_pose_enc[..., :3]).norm(dim=-1, keepdim=True)
         loss_R = (pred_pose_enc[..., 3:7] - gt_pose_enc[..., 3:7]).norm(dim=-1)
-        loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).norm(dim=-1)
+        if pose_encoding_type == "absT_quaR":
+            loss_FL = torch.zeros((), dtype=pred_pose_enc.dtype, device=pred_pose_enc.device)
+        else:
+            loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).norm(dim=-1)
+    elif loss_type =="l1_gt_norm":
+        diff = (pred_pose_enc[..., :3] - gt_pose_enc[..., :3]).abs()
+        gt_norm = torch.norm(gt_pose_enc[..., :3], dim=-1, keepdim=True)  # shape (..., 1)
+        loss_T = diff / gt_norm.clamp(min=1e-6)
+        loss_R = (pred_pose_enc[..., 3:7] - gt_pose_enc[..., 3:7]).abs()
+        if pose_encoding_type == "absT_quaR":
+            loss_FL = torch.zeros((), dtype=pred_pose_enc.dtype, device=pred_pose_enc.device)
+        else:
+            loss_FL = (pred_pose_enc[..., 7:] - gt_pose_enc[..., 7:]).abs()
     else:
         raise ValueError(f"Unknown loss type: {loss_type}")
 
@@ -235,7 +259,8 @@ def compute_point_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_f
     
     return loss_dict
 
-def compute_depth_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_fn = None, valid_range=-1, inv_depth_only=False, **kwargs):
+
+def compute_depth_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_fn = None, valid_range=-1, **kwargs):
     """
     Compute depth loss.
     
@@ -248,17 +273,13 @@ def compute_depth_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_f
         valid_range: Quantile range for outlier filtering
     """
     pred_depth = predictions['depth']
-    if inv_depth_only:
-        pred_depth = 1.0 / torch.clamp(pred_depth, min=1e-4, max=1e4)
-        pred_depth_conf = None
-    else:
-        pred_depth_conf = predictions['depth_conf']
+    pred_depth_conf = predictions['depth_conf']
 
     gt_depth = batch['depths']
     gt_depth = check_and_fix_inf_nan(gt_depth, "gt_depth")
     gt_depth = gt_depth[..., None]              # (B, H, W, 1)
-    
     gt_depth_mask = batch['point_masks'].clone()   # 3D points derived from depth map, so we use the same mask
+
     if gt_depth_mask.sum() < 100:
         # If there are less than 100 valid points, skip this batch
         dummy_loss = (0.0 * pred_depth).mean()
@@ -270,7 +291,8 @@ def compute_depth_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_f
     # NOTE: we put conf inside regression_loss so that we can also apply conf loss to the gradient loss in a multi-scale manner
     # this is hacky, but very easier to implement
     loss_conf, loss_grad, loss_reg = regression_loss(pred_depth, gt_depth, gt_depth_mask, conf=pred_depth_conf,
-                                             gradient_loss_fn=gradient_loss_fn, gamma=gamma, alpha=alpha, valid_range=valid_range)
+                                             gradient_loss_fn=gradient_loss_fn, gamma=gamma, alpha=alpha, valid_range=valid_range,
+                                             loss_type="logL1")
 
     loss_dict = {
         f"loss_conf_depth": loss_conf,
@@ -280,8 +302,8 @@ def compute_depth_loss(predictions, batch, gamma=1.0, alpha=0.2, gradient_loss_f
 
     return loss_dict
 
-
-def regression_loss(pred, gt, mask, conf=None, gradient_loss_fn=None, gamma=1.0, alpha=0.2, valid_range=-1):
+def regression_loss(pred, gt, mask, conf=None, gradient_loss_fn=None, gamma=1.0, alpha=0.2, valid_range=-1,
+                    loss_type=None):
     """
     Core regression loss function with confidence weighting and optional gradient loss.
     
@@ -306,19 +328,21 @@ def regression_loss(pred, gt, mask, conf=None, gradient_loss_fn=None, gamma=1.0,
     """
     bb, ss, hh, ww, nc = pred.shape
 
+    if loss_type == "logL1":
+        pred = torch.log(torch.clamp(pred, min=1e-6))
+        gt = torch.log(torch.clamp(gt, min=1e-6))
+
     # Compute L2 distance between predicted and ground truth points
     loss_reg = torch.norm(gt[mask] - pred[mask], dim=-1)
     loss_reg = check_and_fix_inf_nan(loss_reg, "loss_reg")
 
     # Confidence-weighted loss: gamma * loss * conf - alpha * log(conf)
     # This encourages the model to be confident on easy examples and less confident on hard ones
-    loss_conf = torch.tensor(0.0, device=pred.device)
-    if conf is not None:    
-        loss_conf = gamma * loss_reg * conf[mask] - alpha * torch.log(conf[mask])
-        loss_conf = check_and_fix_inf_nan(loss_conf, "loss_conf")
+    loss_conf = gamma * loss_reg * conf[mask] - alpha * torch.log(conf[mask])
+    loss_conf = check_and_fix_inf_nan(loss_conf, "loss_conf")
         
     # Initialize gradient loss
-    loss_grad = torch.tensor(0.0, device=pred.device)
+    loss_grad = 0
 
     # Prepare confidence for gradient loss if needed
     if "conf" in gradient_loss_fn:
@@ -511,36 +535,6 @@ def gradient_loss(prediction, target, mask, conf=None, gamma=1.0, alpha=0.2):
         grad_loss = torch.sum(grad_loss) / divisor
 
     return grad_loss
-
-def scale_shift_invariant_loss(pred, target, mask):
-    """
-    Computes scale- and shift-invariant MSE between pred and target under a binary mask.
-    Operates per-batch.
-    """
-    B = pred.shape[0]
-    loss = 0.0
-
-    for i in range(B):
-        p = pred[i][mask[i]]
-        t = target[i][mask[i]]
-
-        if p.numel() < 10:
-            continue
-
-        # Fit affine parameters: t ≈ a * p + b
-        mean_p = p.mean()
-        mean_t = t.mean()
-
-        var_p = ((p - mean_p) ** 2).mean()
-        cov_pt = ((p - mean_p) * (t - mean_t)).mean()
-
-        a = cov_pt / (var_p + 1e-8)
-        b = mean_t - a * mean_p
-
-        aligned_p = a * p + b
-        loss += F.mse_loss(aligned_p, t)
-
-    return loss / B
 
 
 def point_map_to_normal(point_map, mask, eps=1e-6):

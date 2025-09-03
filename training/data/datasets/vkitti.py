@@ -24,9 +24,9 @@ class VKittiDataset(BaseDataset):
         split: str = "train",
         VKitti_DIR: str = "/checkpoint/repligen/jianyuan/datasets/vkitti/",
         min_num_images: int = 24,
-        len_train: int = 100,
-        len_test: int = 10,
-        expand_ratio: int = 8,
+        len_train: int = 10000,
+        len_test: int = 1000,
+        expand_ratio: int = 4,
     ):
         """
         Initialize the VKittiDataset.

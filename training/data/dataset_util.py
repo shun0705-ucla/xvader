@@ -709,3 +709,29 @@ def load_16big_png_depth(depth_png: str) -> np.ndarray:
             .reshape((depth_pil.size[1], depth_pil.size[0]))
         )
     return depth
+
+
+def quat_to_rot_np(qx, qy, qz, qw) -> np.ndarray:
+    q = np.array([qx, qy, qz, qw], dtype=np.float32)
+    q /= (np.linalg.norm(q) + 1e-12)
+    x, y, z, w = q
+    return np.array([
+        [1 - 2*(y*y + z*z),   2*(x*y - z*w),     2*(x*z + y*w)],
+        [2*(x*y + z*w),       1 - 2*(x*x + z*z), 2*(y*z - x*w)],
+        [2*(x*z - y*w),       2*(y*z + x*w),     1 - 2*(x*x + y*y)]
+    ], dtype=np.float32)
+
+def forward_from_quat(qx, qy, qz, qw) -> np.ndarray:
+    R = quat_to_rot_np(qx, qy, qz, qw)
+    fwd = R @ np.array([0.0, 0.0, 1.0], dtype=np.float32)
+    return fwd / (np.linalg.norm(fwd) + 1e-12)
+
+def robust_avg_depth_with_mask(depth_f32: np.ndarray, valid_mask: np.ndarray, trim_frac=0.10) -> float:
+    d = depth_f32[valid_mask]
+    if d.size == 0:
+        return np.float32(1e-3)
+    d64 = np.sort(d.astype(np.float64, copy=False))
+    lo = int(trim_frac * len(d64))
+    hi = max(lo + 1, int((1.0 - trim_frac) * len(d64)))
+    return np.float32(d64[lo:hi].mean())
+

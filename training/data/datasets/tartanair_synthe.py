@@ -18,16 +18,16 @@ from data.dataset_util import *
 from data.base_dataset import BaseDataset
 
 
-class TartanAirDataset(BaseDataset):
+class TartanAirSyntheDataset(BaseDataset):
     def __init__(
         self,
         common_conf,
         split: str = "train",
-        TartanAir_DIR: str = "datasets/tartanair/",
+        TartanAir_DIR: str = "datasets/TartanAir_Synthe/",
         min_num_images: int = 24,
         len_train: int = 100,
         len_test: int = 10,
-        expand_ratio: int = 4,
+        expand_ratio: int = 6,
     ):
         """
         Initialize the TartanAirDataset.
@@ -70,7 +70,7 @@ class TartanAirDataset(BaseDataset):
                 sequence_list = [line.strip() for line in f.readlines()]
         else:
             # Generate sequence list and save to txt            
-            sequence_list = glob.glob(osp.join(self.TartanAirDIR, "*/*/*/image_lcam*"))  # root/scene_name/difficulty/trajectory/camera          
+            sequence_list = glob.glob(osp.join(self.TartanAirDIR, "*/*/*/image_lcam_front*"))  # root/scene_name/difficulty/trajectory/camera          
             sequence_list = [file_path.split(self.TartanAirDIR)[-1].lstrip('/') for file_path in sequence_list] # scene_name/difficulty/trajectory/camera
             sequence_list = sorted(sequence_list)
 
@@ -115,15 +115,34 @@ class TartanAirDataset(BaseDataset):
                          [0, fy, cy],
                          [0, 0, 1]], dtype=np.float32)
 
-    def build_tartanair_intrinsics(self, num_images, width=640, height=640, focal=320.0):
+    def build_tartanair_intrinsics(self, num_images, camera_folder, width=640, height=640, focal=320.0):
+        def fov_to_focal_length(fov_deg, image_size, axis="x"):
+            width, height = image_size
+            cx, cy = (width / 2.0, height / 2.0)
+
+            fov_rad = math.radians(fov_deg)
+
+            if axis == "x":  # horizontal FoV
+                fx = (width / 2.0) / math.tan(fov_rad / 2.0)
+                fy = fx  # often assumed square pixels
+            elif axis == "y":  # vertical FoV
+                fy = (height / 2.0) / math.tan(fov_rad / 2.0)
+                fx = fy
+            else:
+                raise ValueError("axis must be 'x' or 'y'")
+
+            return fx, fy, cx, cy
         # original tartan air has fixed camera intrinsics
-        fx = focal
-        fy = focal
-        cx = width / 2.0
-        cy = height / 2.0
+        if "FoV" in camera_folder:
+            fov = float(camera_folder.split("FoV")[-1])
+            fx, fy, cx, cy = fov_to_focal_length(fov, (width, height), axis="x")
+        else:
+            fx = focal
+            fy = focal
+            cx = width / 2.0
+            cy = height / 2.0
         one_intrinsic = np.array([fx, fy, cx, cy], dtype=np.float32)
         camera_intrinsic = np.tile(one_intrinsic, (num_images, 1))
-
         return camera_intrinsic
 
     def read_decode_depth(self, depthpath: str) -> np.ndarray:
@@ -162,7 +181,7 @@ class TartanAirDataset(BaseDataset):
             seq_name = self.sequence_list[seq_index] # scene_name/difficulty/trajectory/camera
 
         scene, difficulty, traj, camera_folder = seq_name.split("/")
-        #AbandonedCable, Data_easy, P003, image_lcam_bottom
+        #AbandonedCable, Data_easy, P003, image_lcam_front_FoV105
         
         # Load camera parameters
         try:
@@ -172,7 +191,7 @@ class TartanAirDataset(BaseDataset):
             camera_parameters = np.loadtxt(pose_path)
             # intrinsics
             num_images = len(camera_parameters)
-            camera_intrinsic = self.build_tartanair_intrinsics(num_images=num_images)
+            camera_intrinsic = self.build_tartanair_intrinsics(num_images=num_images, camera_folder=camera_folder)
             # endpoint
             #endpoint_file = camera_folder.replace("image", "endpoint") + ".txt"
             #endpoint_path = osp.join(self.TartanAirDIR, scene, difficulty, traj, endpoint_file)

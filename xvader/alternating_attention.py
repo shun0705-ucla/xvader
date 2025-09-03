@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from typing import Tuple, List
@@ -96,28 +97,35 @@ class AlternatingAttention(nn.Module):
         """
         Args:
             patch_tokens (torch.Tensor): shape (B, S, P, C)
+            patch_tokens (torch.Tensor): shape (B, S, P, C)
         Returns:
             final_tokens_concat (torch.Tensor): shape (S, P_A, 2*C) # for camera_head
+            patch_tokens (torch.Tensor): shape (B, S, P, C)
             patch_tokens (torch.Tensor): shape (B, S, P, C)
         """
         assert patch_tokens.dim() == 4, "Expected input shape (B, S, P, C)"
         B, S, P, C = patch_tokens.shape
+        patch_tokens = patch_tokens.view(B * S, P, C)
         
         # Expand camera and register tokens to match batch size and sequence length
         camera_token = slice_expand_and_flatten(self.camera_token, B, S)
         register_token = slice_expand_and_flatten(self.register_token, B, S)
+        camera_token = slice_expand_and_flatten(self.camera_token, B, S)
+        register_token = slice_expand_and_flatten(self.register_token, B, S)
 
         # Concatenate special tokens with patch tokens
-        tokens = torch.cat([camera_token, register_token, patch_tokens], dim=2)
+        tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)  # (B*S, P_A, C)
 
         pos = None
         if self.rope is not None:
+            pos = self.position_getter(B*S, patch_h, patch_w, device=device)
             pos = self.position_getter(B*S, patch_h, patch_w, device=device)
 
         if self.patch_start_idx > 0:
             # do not use position embedding for special tokens (camera and register tokens)
             # so set pos to 0 for the special tokens
             pos = pos + 1
+            pos_special = torch.zeros(B*S, self.patch_start_idx, 2).to(device).to(pos.dtype)
             pos_special = torch.zeros(B*S, self.patch_start_idx, 2).to(device).to(pos.dtype)
             pos = torch.cat([pos_special, pos], dim=1)
         
@@ -139,11 +147,25 @@ class AlternatingAttention(nn.Module):
                     tokens, global_idx, tokens_global = self._process_global_attention(
                         tokens, B, S, P_A, C, global_idx, pos=pos
                     )
+
+                    with torch.no_grad():
+                        if S > 1:
+                            t0 = tokens[0, 0, 0]  # (B=0, S=0)
+                            t1 = tokens[0, 1, 0]  # (B=0, S=1)
+                            cos = F.cosine_similarity(t0, t1, dim=0).item()
+                            
+                            #print("t0.shape:", t0.shape)
+                            #print("t1.shape:", t1.shape)
+                            #print("template cosine(first vs others):", cos)
+                            
                 else:
                     raise ValueError(f"Unknown attention type: {attn_type}")
+
                 
-        final_tokens_concat = torch.cat([tokens_frame, tokens_global], dim=-1) # (B, S, P_A, 2C)
-        camera_tokens = final_tokens_concat[:,0,:] # (B, S, 2C)
+        #final_tokens_concat = torch.cat([tokens_frame, tokens_global], dim=-1) # (B, S, P_A, 2C)
+        #camera_tokens = final_tokens_concat[:,:,0] # (B, S, 2C)
+        camera_tokens = tokens[:, :, 0, :] # (B, S, C)
+        #camera_tokens_concat = self.concat_with_first_frame(camera_tokens)
         patch_tokens = tokens[:, :, self.patch_start_idx:, :] # (B, S, P, C)
 
         return camera_tokens, patch_tokens
@@ -155,17 +177,25 @@ class AlternatingAttention(nn.Module):
         # If needed, reshape tokens or positions:
         if tokens.shape != (B*S, N, C):
             tokens = tokens.view(B*S, N, C)
+        if tokens.shape != (B*S, N, C):
+            tokens = tokens.view(B*S, N, C)
 
         if pos is not None and pos.shape != (B*S, N, 2):
             pos = pos.view(B, S, N, 2).view(B*S, N, 2)
 
+        #print("frame_att_tokens_shape", tokens.shape)
+
         # by default, self.aa_block_size=1, which processes one block at a time
         for _ in range(self.aa_block_size):
+            #print(frame_idx)
             if self.training:
                 tokens = checkpoint(self.frame_blocks[frame_idx], tokens, pos, use_reentrant=self.use_reentrant)
             else:
                 tokens = self.frame_blocks[frame_idx](tokens, pos=pos)
             frame_idx += 1
+        
+        tokens = tokens.view(B, S, N, C)
+        tokens_frame = tokens.view(B, S, N, C)
         
         tokens = tokens.view(B, S, N, C)
         tokens_frame = tokens.view(B, S, N, C)
@@ -177,12 +207,16 @@ class AlternatingAttention(nn.Module):
         """
         if tokens.shape != (B, S * N, C):
             tokens = tokens.view(B, S, N, C).view(B, S * N, C)
+        #print("tokens.shape (global):", tokens.shape)
 
+        if pos is not None and pos.shape != (B, S * N, 2):
+            pos = pos.view(B, S, N ,2).view(B, S * N, 2)
         if pos is not None and pos.shape != (B, S * N, 2):
             pos = pos.view(B, S, N ,2).view(B, S * N, 2)
 
         # by default, self.aa_block_size=1, which processes one block at a time
         for _ in range(self.aa_block_size):
+            #print(global_idx)
             if self.training:
                 tokens = checkpoint(self.global_blocks[global_idx], tokens, pos, use_reentrant=self.use_reentrant)
             else:
@@ -192,7 +226,16 @@ class AlternatingAttention(nn.Module):
 
         tokens = tokens.view(B, S, N, C)
         tokens_global = tokens.view(B, S, N, C)
+        tokens = tokens.view(B, S, N, C)
+        tokens_global = tokens.view(B, S, N, C)
         return tokens, global_idx, tokens_global
+    
+    def concat_with_first_frame(self, camera_tokens:torch.Tensor):
+        B, S, C = camera_tokens.shape
+        token_first_frame = camera_tokens[:,0,:] #(B,C)
+        token_first_frame_expanded = token_first_frame.unsqueeze(1).expand(-1, S, -1) # (B,S,C)
+        camera_tokens_concat = torch.cat([token_first_frame_expanded, camera_tokens], dim=-1) # (B,S,2C)
+        return camera_tokens_concat
     
 def slice_expand_and_flatten(token_tensor, B, S):
     """
