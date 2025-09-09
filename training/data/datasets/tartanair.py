@@ -27,7 +27,7 @@ class TartanAirDataset(BaseDataset):
         min_num_images: int = 24,
         len_train: int = 100,
         len_test: int = 10,
-        expand_ratio: int = 4,
+        expand_ratio: int = 8,
     ):
         """
         Initialize the TartanAirDataset.

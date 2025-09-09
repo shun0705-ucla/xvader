@@ -2,13 +2,13 @@ defaults:
   - default_dataset.yaml
 
 exp_name: exp001
-img_size: 476
+img_size: 518 #476
 num_workers: 4
-seed_value: 42
+seed_value: 33
 accum_steps: 1    # We did not use gradient accumulation in our training, while if you suffer from OOM, you can try to use it.
 patch_size: 14
 val_epoch_freq: 5
-max_img_per_gpu: 8
+max_img_per_gpu: 7
 # img_size:224^2 / accum_steps:2 * max_img_per_gpu: 48 = VRAM:13GB
 
 limit_train_batches: 800
@@ -46,11 +46,11 @@ data:
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
-        #- _target_: data.datasets.tartanair.TartanAirDataset
-        #  split: train
-        #  len_train: 10000
-        #  len_test: 100
-        #  TartanAir_DIR: ../dataset/TartanAir
+        - _target_: data.datasets.tartanair.TartanAirDataset
+          split: train
+          len_train: 10000
+          len_test: 100
+          TartanAir_DIR: ../dataset/TartanAir
         - _target_: data.datasets.tartanair_synthe.TartanAirSyntheDataset
           split: train
           len_train: 10000
@@ -99,7 +99,7 @@ logging:
         #- loss_FL
         - loss_conf_depth
         - loss_reg_depth
-        #- loss_grad_depth
+        - loss_grad_depth
     val:
       keys_to_log:
         - loss_objective
@@ -109,7 +109,7 @@ logging:
         #- loss_FL
         - loss_conf_depth
         - loss_reg_depth
-        #- loss_grad_depth
+        - loss_grad_depth
 
 
 
@@ -125,20 +125,21 @@ checkpoint:
 loss:
   _target_: loss.MultitaskLoss
   camera: 
-    weight: 5.0
+    weight: 3.0
     loss_type: "l1" # The paper uses smooth l1 loss, but we found l1 loss is more stable than smooth l1 and l2 loss.  
+    weight_rot: 5.0
   depth:
     weight: 1.0
-    gradient_loss_fn: "unuse" 
+    gradient_loss_fn: "grad" #"unuse" 
     valid_range: 0.98
     inv_depth_only: True
   point: null
   # If you want to enable point, use the following config
-  # point: 
-  #   weight: 1.0
-  #   gradient_loss_fn: "normal" 
-  #   valid_range: 0.98
-  track: null   
+  #point: 
+  #  weight: 1.0
+  #  gradient_loss_fn: "normal" 
+  #  valid_range: 0.98
+  #track: null   
 
 
 

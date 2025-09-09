@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-from third_party.UniDepth.unidepth.models.backbones.dinov2 import _make_dinov2_model
+#from third_party.UniDepth.unidepth.models.backbones.dinov2 import _make_dinov2_model
 from third_party.vggt.vggt.layers.vision_transformer import vit_small, vit_base, vit_large
 from .metric_depth_head import MetricDepthHead
 from .camera_embed import CameraEmbedding
@@ -30,7 +30,6 @@ class Xvader(nn.Module):
     ):
         super(Xvader, self).__init__()
 
-        '''
         '''
         self.intermediate_layer_idx_list = {
             'vits': [2, 5, 8, 11],
@@ -67,7 +66,6 @@ class Xvader(nn.Module):
                                  interpolate_offset=0.0,
                                  block_chunks=0,
                                  init_values=1.0)
-        '''
         self.embed_dim = 1024
         self.patch_size = self.encoder.patch_size
 
@@ -211,7 +209,7 @@ class Xvader(nn.Module):
         assert len(intrinsics.shape) == 3 #(B,3,3)
         assert (intrinsics.shape[-1] == 3 and intrinsics.shape[-2] == 3), "camera shape is not (..., 3, 3)"
 
-        B, _, H, W = images.shape
+        S, _, H, W = images.shape
 
         Ht, Wt = resolution, resolution
         sx, sy = Wt / W, Ht / H

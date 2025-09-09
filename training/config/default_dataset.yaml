@@ -4,7 +4,7 @@ data:
   train:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: 4
-    max_img_per_gpu: 8
+    max_img_per_gpu: 7
     # Shuffling in PyTorch DataLoader can sometimes copy large dicts and exceed CPU memory
     # (see: https://github.com/pytorch/pytorch/issues/13246).
     # To avoid this, set shuffle=False and enable common_config.inside_random=True instead.
@@ -25,8 +25,8 @@ data:
       debug: False
       get_nearby: True
       load_depth: True
-      img_nums: [2, 8]
-      max_img_per_gpu: 8
+      img_nums: [2, 7]
+      max_img_per_gpu: 7
       allow_duplicate_img: True
       repeat_batch: False
 

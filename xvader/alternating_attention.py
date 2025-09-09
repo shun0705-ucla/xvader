@@ -110,8 +110,7 @@ class AlternatingAttention(nn.Module):
         # Expand camera and register tokens to match batch size and sequence length
         camera_token = slice_expand_and_flatten(self.camera_token, B, S)
         register_token = slice_expand_and_flatten(self.register_token, B, S)
-        camera_token = slice_expand_and_flatten(self.camera_token, B, S)
-        register_token = slice_expand_and_flatten(self.register_token, B, S)
+        print("camera_token.shape:", camera_token.shape)
 
         # Concatenate special tokens with patch tokens
         tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)  # (B*S, P_A, C)
@@ -130,7 +129,7 @@ class AlternatingAttention(nn.Module):
             pos = torch.cat([pos_special, pos], dim=1)
         
         # update P because we added special tokens
-        _, _, P_A, C = tokens.shape # Patch + Additional tokens (camera and register)
+        _, P_A, C = tokens.shape # Patch + Additional tokens (camera and register)
 
         frame_idx = 0
         global_idx = 0
@@ -248,7 +247,7 @@ def slice_expand_and_flatten(token_tensor, B, S):
     5) Flattens to (B*S, X, C) for processing
 
     Returns:
-        torch.Tensor: Processed tokens with shape (B, S, X, C)
+        torch.Tensor: Processed tokens with shape (B*S, X, C)
     """
 
     # Slice out the "query" tokens => shape (1, 1, ...)
@@ -259,5 +258,5 @@ def slice_expand_and_flatten(token_tensor, B, S):
     combined = torch.cat([query, others], dim=1)
 
     # Finally flatten => shape (B*S, ...)
-    combined = combined.view(B, S, *combined.shape[2:])
+    combined = combined.view(B*S, *combined.shape[2:])
     return combined

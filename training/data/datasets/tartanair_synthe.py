@@ -27,7 +27,7 @@ class TartanAirSyntheDataset(BaseDataset):
         min_num_images: int = 24,
         len_train: int = 100,
         len_test: int = 10,
-        expand_ratio: int = 6,
+        expand_ratio: int = 8,
     ):
         """
         Initialize the TartanAirDataset.
@@ -146,9 +146,9 @@ class TartanAirSyntheDataset(BaseDataset):
         return camera_intrinsic
 
     def read_decode_depth(self, depthpath: str) -> np.ndarray:
-        depth_rgba = cv2.imread(depthpath, cv2.IMREAD_UNCHANGED)  # HxWx4 uint8
-        depth = depth_rgba.view("<f4")                            # reinterpret as float32
-        return np.squeeze(depth, axis=-1)                         # HxW float32 (meters)
+        depth_rgba = cv2.imread(depthpath, cv2.IMREAD_UNCHANGED)
+        depth = depth_rgba.view("<f4")
+        return np.squeeze(depth, axis=-1)
 
     def get_data(
         self,
@@ -225,9 +225,7 @@ class TartanAirSyntheDataset(BaseDataset):
             depth_filepath = osp.join(self.TartanAirDIR, scene, difficulty, traj, depth_folder, f"{image_idx:06d}_{cam_name}_depth.png")
 
             image = read_image_cv2(image_filepath)
-            depth_rgba = cv2.imread(depth_filepath, cv2.IMREAD_UNCHANGED) # raw RGBA
-            depth_map = depth_rgba.view("<f4") # Convert the underlying memory (H, W, 4 * uint8) → (H, W, 1 * float32)
-            depth_map = np.squeeze(depth_map, axis=-1) # Remove the redundant last axis → (H, W)
+            depth_map = self.read_decode_depth(depth_filepath)
             depth_map = threshold_depth_map(depth_map, max_percentile=-1, min_percentile=-1, max_depth=self.depth_max)
 
             assert image.shape[:2] == depth_map.shape, f"Image and depth shape mismatch: {image.shape[:2]} vs {depth_map.shape}"

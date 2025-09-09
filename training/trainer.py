@@ -586,8 +586,38 @@ class Trainer:
                         fn = os.path.join(save_dir, f"iter{data_iter:05d}_b{b}.png")
                         vutils.save_image(imgs[b], fn)
                 print(f"Saved images for iter {data_iter}")
+            if "depths" in batch and batch["depths"].numel() > 0:
+                depths = batch["depths"].detach().cpu()  # [B, S, 1, H, W] or [B, 1, H, W]
+                if depths.dim() == 5:   # [B, S, 1, H, W]
+                    B, S, _, H, W = depths.shape
+                    for b in range(min(B, 2)):
+                        for s in range(min(S, 10)):
+                            depth = depths[b, s, 0].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_depth.npy"), depth)
+                elif depths.dim() == 4: # [B, S, H, W]
+                    B, S, H, W = depths.shape
+                    for b in range(min(B, 4)):
+                        for s in range(min(S, 10)):
+                            depth = depths[b, s].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_depth.npy"), depth)
+            if "point_masks" in batch and batch["point_masks"].numel() > 0:
+                masks = batch["point_masks"].detach().cpu()  # [B, S, 1, H, W] or [B, 1, H, W]
+                if masks.dim() == 5:   # [B, S, 1, H, W]
+                    B, S, _, H, W = masks.shape
+                    for b in range(min(B, 2)):
+                        for s in range(min(S, 10)):
+                            mask = masks[b, s, 0].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_mask.npy"), mask)
+                elif masks.dim() == 4: # [B, S, H, W]
+                    B, S, H, W = masks.shape
+                    for b in range(min(B, 4)):
+                        for s in range(min(S, 10)):
+                            mask = masks[b, s].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_mask.npy"), mask)
+            
             #####################################################################
             '''
+
             
 
             batch = copy_data_to_device(batch, self.device, non_blocking=True)
@@ -759,7 +789,7 @@ class Trainer:
                 cam_points=batch["cam_points"],
                 world_points=batch["world_points"],
                 depths=batch["depths"],
-                scale_by_points=True,
+                scale_extri_only=False,
                 point_masks=batch["point_masks"],
             )
 

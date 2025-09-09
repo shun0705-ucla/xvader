@@ -56,8 +56,7 @@ class MultitaskLoss(torch.nn.Module):
         # Depth estimation loss - if depth maps are predicted
         if "depth" in predictions:
             depth_loss_dict = compute_depth_loss(predictions, batch, **self.depth)
-            depth_loss = 0.1 * depth_loss_dict["loss_conf_depth"] + depth_loss_dict["loss_reg_depth"] + depth_loss_dict["loss_grad_depth"]
-            #depth_loss = depth_loss_dict["loss_reg_depth"]
+            depth_loss = 0.1 * depth_loss_dict["loss_conf_depth"] + depth_loss_dict["loss_reg_depth"] + 1.0 * depth_loss_dict["loss_grad_depth"]
             depth_loss = depth_loss * self.depth["weight"]
             total_loss = total_loss + depth_loss
             loss_dict.update(depth_loss_dict)

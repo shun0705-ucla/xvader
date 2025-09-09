@@ -26,7 +26,7 @@ class VKittiDataset(BaseDataset):
         min_num_images: int = 24,
         len_train: int = 10000,
         len_test: int = 1000,
-        expand_ratio: int = 4,
+        expand_ratio: int = 5,
     ):
         """
         Initialize the VKittiDataset.
