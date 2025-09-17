@@ -110,7 +110,6 @@ class AlternatingAttention(nn.Module):
         # Expand camera and register tokens to match batch size and sequence length
         camera_token = slice_expand_and_flatten(self.camera_token, B, S)
         register_token = slice_expand_and_flatten(self.register_token, B, S)
-        print("camera_token.shape:", camera_token.shape)
 
         # Concatenate special tokens with patch tokens
         tokens = torch.cat([camera_token, register_token, patch_tokens], dim=1)  # (B*S, P_A, C)

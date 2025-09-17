@@ -216,3 +216,5 @@ vkitti/
 scripts/
 utils/
 debug_batches/
+kitti_clipsize_10/
+ue5/
