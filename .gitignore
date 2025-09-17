@@ -217,4 +217,4 @@ scripts/
 utils/
 debug_batches/
 kitti_clipsize_10/
-ue5/
+ue5_paired_data/
