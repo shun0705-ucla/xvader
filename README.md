@@ -21,7 +21,7 @@ Finally, the depth and camera heads predict dense depth maps and camera poses in
 
 ## Result
 
-<img src="assets/xvader_qualitative_comparison.jpg">
+<img src="assets/XVADER_qualitative_comparison.jpg">
 
 ## Demo
 
