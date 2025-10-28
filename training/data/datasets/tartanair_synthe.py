@@ -9,6 +9,7 @@ import os.path as osp
 import logging
 import random
 import glob
+import re
 
 import cv2
 import numpy as np
@@ -17,24 +18,24 @@ from data.dataset_util import *
 from data.base_dataset import BaseDataset
 
 
-class VKittiDataset(BaseDataset):
+class TartanAirSyntheDataset(BaseDataset):
     def __init__(
         self,
         common_conf,
         split: str = "train",
-        VKitti_DIR: str = "/checkpoint/repligen/jianyuan/datasets/vkitti/",
+        TartanAir_DIR: str = "datasets/TartanAir_Synthe/",
         min_num_images: int = 24,
-        len_train: int = 10000,
-        len_test: int = 1000,
-        expand_ratio: int = 5,
+        len_train: int = 100,
+        len_test: int = 10,
+        expand_ratio: int = 8,
     ):
         """
-        Initialize the VKittiDataset.
+        Initialize the TartanAirDataset.
 
         Args:
             common_conf: Configuration object with common settings.
             split (str): Dataset split, either 'train' or 'test'.
-            VKitti_DIR (str): Directory path to VKitti data.
+            TartanAir_DIR (str): Directory path to TartanAir data.
             min_num_images (int): Minimum number of images per sequence.
             len_train (int): Length of the training dataset.
             len_test (int): Length of the test dataset.
@@ -50,7 +51,7 @@ class VKittiDataset(BaseDataset):
         self.allow_duplicate_img = common_conf.allow_duplicate_img
         
         self.expand_ratio = expand_ratio
-        self.VKitti_DIR = VKitti_DIR
+        self.TartanAirDIR = TartanAir_DIR
         self.min_num_images = min_num_images
 
         if split == "train":
@@ -60,17 +61,17 @@ class VKittiDataset(BaseDataset):
         else:
             raise ValueError(f"Invalid split: {split}")
         
-        logging.info(f"VKitti_DIR is {self.VKitti_DIR}")
+        logging.info(f"TartanAir_DIR is {self.TartanAirDIR}")
 
         # Load or generate sequence list
-        txt_path = osp.join(self.VKitti_DIR, "sequence_list.txt")
+        txt_path = osp.join(self.TartanAirDIR, "sequence_list.txt")
         if osp.exists(txt_path):
             with open(txt_path, 'r') as f:
                 sequence_list = [line.strip() for line in f.readlines()]
         else:
             # Generate sequence list and save to txt            
-            sequence_list = glob.glob(osp.join(self.VKitti_DIR, "*/*/*/rgb/*"))            
-            sequence_list = [file_path.split(self.VKitti_DIR)[-1].lstrip('/') for file_path in sequence_list]
+            sequence_list = glob.glob(osp.join(self.TartanAirDIR, "*/*/*/image_lcam_front*"))  # root/scene_name/difficulty/trajectory/camera          
+            sequence_list = [file_path.split(self.TartanAirDIR)[-1].lstrip('/') for file_path in sequence_list] # scene_name/difficulty/trajectory/camera
             sequence_list = sorted(sequence_list)
 
             # Save to txt file
@@ -82,9 +83,72 @@ class VKittiDataset(BaseDataset):
 
         self.depth_max = 80
 
+        '''
+        # prepare camera endpoint.txt
+        for seq_name in self.sequence_list:
+            endpoint_data_path = osp.join(self.TartanAirDIR, seq_name).replace("image", "endpoint") + ".txt" # endpoint_lcam_front.txt
+            if not osp.exists(endpoint_data_path):
+                pose_path = osp.join(self.TartanAirDIR, seq_name).replace("image", "pose") + ".txt"
+                pose_list = np.loadtxt(pose_path, dtype=np.float32).reshape(-1, 7) # (N,7): x y z qx qy qz qw
+                depth_folder = osp.join(self.TartanAirDIR, seq_name).replace("image", "depth")
+                depth_file_list = glob.glob(osp.join(depth_folder, "*_depth.png"))
+                def key(p):
+                    m = re.match(r"(\d+)_", osp.basename(p))
+                    return int(m.group(1)) if m else osp.basename(p)
+                depth_file_list = sorted(depth_file_list, key=key) # [N] paths to *_depth.png
+                depth_list = []
+                for depth_file in depth_file_list:
+                    depth_list.append(self.read_decode_depth(depth_file)) # list of (H,W) depth maps
+                endpoint_txt = self.compute_camera_endpoint(pose_list, depth_list, self.depth_max, K=self.build_tartanair_K())
+                np.savetxt(endpoint_data_path, endpoint_txt, fmt="%.6f")
+        '''
         status = "Training" if self.training else "Testing"
-        logging.info(f"{status}: VKitti Real Data size: {self.sequence_list_len}")
-        logging.info(f"{status}: VKitti Data dataset length: {len(self)}")
+        logging.info(f"{status}: TartanAir Real Data size: {self.sequence_list_len}")
+        logging.info(f"{status}: TartanAir Data dataset length: {len(self)}")
+
+    def build_tartanair_K(self, width=640, height=640, focal=320.0) -> np.ndarray:
+        fx = focal
+        fy = focal
+        cx = width / 2.0
+        cy = height / 2.0
+        return np.array([[fx, 0, cx],
+                         [0, fy, cy],
+                         [0, 0, 1]], dtype=np.float32)
+
+    def build_tartanair_intrinsics(self, num_images, camera_folder, width=640, height=640, focal=320.0):
+        def fov_to_focal_length(fov_deg, image_size, axis="x"):
+            width, height = image_size
+            cx, cy = (width / 2.0, height / 2.0)
+
+            fov_rad = math.radians(fov_deg)
+
+            if axis == "x":  # horizontal FoV
+                fx = (width / 2.0) / math.tan(fov_rad / 2.0)
+                fy = fx  # often assumed square pixels
+            elif axis == "y":  # vertical FoV
+                fy = (height / 2.0) / math.tan(fov_rad / 2.0)
+                fx = fy
+            else:
+                raise ValueError("axis must be 'x' or 'y'")
+
+            return fx, fy, cx, cy
+        # original tartan air has fixed camera intrinsics
+        if "FoV" in camera_folder:
+            fov = float(camera_folder.split("FoV")[-1])
+            fx, fy, cx, cy = fov_to_focal_length(fov, (width, height), axis="x")
+        else:
+            fx = focal
+            fy = focal
+            cx = width / 2.0
+            cy = height / 2.0
+        one_intrinsic = np.array([fx, fy, cx, cy], dtype=np.float32)
+        camera_intrinsic = np.tile(one_intrinsic, (num_images, 1))
+        return camera_intrinsic
+
+    def read_decode_depth(self, depthpath: str) -> np.ndarray:
+        depth_rgba = cv2.imread(depthpath, cv2.IMREAD_UNCHANGED)
+        depth = depth_rgba.view("<f4")
+        return np.squeeze(depth, axis=-1)
 
     def get_data(
         self,
@@ -114,30 +178,28 @@ class VKittiDataset(BaseDataset):
             seq_index = random.randint(0, self.sequence_list_len - 1)
 
         if seq_name is None:
-            seq_name = self.sequence_list[seq_index]
+            seq_name = self.sequence_list[seq_index] # scene_name/difficulty/trajectory/camera
 
-        camera_id = int(seq_name[-1])
-
+        scene, difficulty, traj, camera_folder = seq_name.split("/")
+        #AbandonedCable, Data_easy, P003, image_lcam_front_FoV105
+        
         # Load camera parameters
         try:
-            camera_parameters = np.loadtxt(
-                osp.join(self.VKitti_DIR, "/".join(seq_name.split("/")[:2]), "extrinsic.txt"), 
-                delimiter=" ", 
-                skiprows=1
-            )
-            camera_parameters = camera_parameters[camera_parameters[:, 1] == camera_id]
+            # extrinsics
+            pose_file = camera_folder.replace("image", "pose") + ".txt"
+            pose_path = osp.join(self.TartanAirDIR, scene, difficulty, traj, pose_file)
+            camera_parameters = np.loadtxt(pose_path)
+            # intrinsics
+            num_images = len(camera_parameters)
+            camera_intrinsic = self.build_tartanair_intrinsics(num_images=num_images, camera_folder=camera_folder)
+            # endpoint
+            #endpoint_file = camera_folder.replace("image", "endpoint") + ".txt"
+            #endpoint_path = osp.join(self.TartanAirDIR, scene, difficulty, traj, endpoint_file)
+            #camera_endpoints = np.loadtxt(endpoint_path)
 
-            camera_intrinsic = np.loadtxt(
-                osp.join(self.VKitti_DIR, "/".join(seq_name.split("/")[:2]), "intrinsic.txt"), 
-                delimiter=" ", 
-                skiprows=1
-            )
-            camera_intrinsic = camera_intrinsic[camera_intrinsic[:, 1] == camera_id]
         except Exception as e:
             logging.error(f"Error loading camera parameters for {seq_name}: {e}")
-            raise
-
-        num_images = len(camera_parameters)
+            raise      
 
         if ids is None:
             ids = np.random.choice(num_images, img_per_seq, replace=self.allow_duplicate_img)
@@ -157,12 +219,13 @@ class VKittiDataset(BaseDataset):
         original_sizes = []
 
         for image_idx in ids:
-            image_filepath = osp.join(self.VKitti_DIR, seq_name, f"rgb_{image_idx:05d}.jpg")
-            depth_filepath = osp.join(self.VKitti_DIR, seq_name, f"depth_{image_idx:05d}.png").replace("/rgb", "/depth")
+            cam_name = camera_folder.replace("image_", "") # e.g., "lcam_left"
+            image_filepath = osp.join(self.TartanAirDIR, seq_name, f"{image_idx:06d}_{cam_name}.png")
+            depth_folder = camera_folder.replace("image", "depth")
+            depth_filepath = osp.join(self.TartanAirDIR, scene, difficulty, traj, depth_folder, f"{image_idx:06d}_{cam_name}_depth.png")
 
             image = read_image_cv2(image_filepath)
-            depth_map = cv2.imread(depth_filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
-            depth_map = depth_map / 100
+            depth_map = self.read_decode_depth(depth_filepath)
             depth_map = threshold_depth_map(depth_map, max_percentile=-1, min_percentile=-1, max_depth=self.depth_max)
 
             assert image.shape[:2] == depth_map.shape, f"Image and depth shape mismatch: {image.shape[:2]} vs {depth_map.shape}"
@@ -170,8 +233,17 @@ class VKittiDataset(BaseDataset):
             original_size = np.array(image.shape[:2])
 
             # Process camera matrices
-            extri_opencv = camera_parameters[image_idx][2:].reshape(4, 4)
-            extri_opencv = extri_opencv[:3]
+            t_world = camera_parameters[image_idx, :3]
+            x, y, z, w = camera_parameters[image_idx, 3:7]
+            R_cam_to_world = quat_to_rot_np(x, y, z, w)
+            R_world_to_cam = R_cam_to_world.T
+            t_world_to_cam = -R_world_to_cam @ t_world
+            P = np.array([[0, 1, 0],
+                          [0, 0, 1],
+                          [1, 0, 0]], dtype=R_world_to_cam.dtype)
+            R_world_to_cam_opencv = P @ R_world_to_cam
+            t_world_to_cam_opencv = P @ t_world_to_cam
+            extri_opencv = np.hstack([R_world_to_cam_opencv, t_world_to_cam_opencv.reshape(3,1)])
 
             intri_opencv = np.eye(3)
             intri_opencv[0, 0] = camera_intrinsic[image_idx][-4]
@@ -211,7 +283,7 @@ class VKittiDataset(BaseDataset):
             point_masks.append(point_mask)
             original_sizes.append(original_size)
 
-        set_name = "vkitti"
+        set_name = "tartanair"
         batch = {
             "seq_name": set_name + "_" + seq_name,
             "ids": ids,

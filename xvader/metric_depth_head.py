@@ -142,8 +142,9 @@ class MetricDepthHead(nn.Module):
         return logdepth, confidence
 
     def forward(self, features_list: list[torch.Tensor]):
-        #B, S, N, C = features_list.shape
-        #features = features.view(B*S, N, C)# process per image
+        B, S, N, C = features_list[0].shape
+        for i in range(len(features_list)):
+            features_list[i] = features_list[i].view(B*S, N, C) # process per image
 
         upsampled_features_map = self.process(features_list)
         logdepth, logconf = self.decode(upsampled_features_map)

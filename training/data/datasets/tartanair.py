@@ -9,6 +9,7 @@ import os.path as osp
 import logging
 import random
 import glob
+import re
 
 import cv2
 import numpy as np
@@ -82,11 +83,39 @@ class TartanAirDataset(BaseDataset):
 
         self.depth_max = 80
 
+        '''
+        # prepare camera endpoint.txt
+        for seq_name in self.sequence_list:
+            endpoint_data_path = osp.join(self.TartanAirDIR, seq_name).replace("image", "endpoint") + ".txt" # endpoint_lcam_front.txt
+            if not osp.exists(endpoint_data_path):
+                pose_path = osp.join(self.TartanAirDIR, seq_name).replace("image", "pose") + ".txt"
+                pose_list = np.loadtxt(pose_path, dtype=np.float32).reshape(-1, 7) # (N,7): x y z qx qy qz qw
+                depth_folder = osp.join(self.TartanAirDIR, seq_name).replace("image", "depth")
+                depth_file_list = glob.glob(osp.join(depth_folder, "*_depth.png"))
+                def key(p):
+                    m = re.match(r"(\d+)_", osp.basename(p))
+                    return int(m.group(1)) if m else osp.basename(p)
+                depth_file_list = sorted(depth_file_list, key=key) # [N] paths to *_depth.png
+                depth_list = []
+                for depth_file in depth_file_list:
+                    depth_list.append(self.read_decode_depth(depth_file)) # list of (H,W) depth maps
+                endpoint_txt = self.compute_camera_endpoint(pose_list, depth_list, self.depth_max, K=self.build_tartanair_K())
+                np.savetxt(endpoint_data_path, endpoint_txt, fmt="%.6f")
+        '''
         status = "Training" if self.training else "Testing"
         logging.info(f"{status}: TartanAir Real Data size: {self.sequence_list_len}")
         logging.info(f"{status}: TartanAir Data dataset length: {len(self)}")
 
-    def build_tartanair_intrinsics(num_images, width=640, height=640, focal=320.0):
+    def build_tartanair_K(self, width=640, height=640, focal=320.0) -> np.ndarray:
+        fx = focal
+        fy = focal
+        cx = width / 2.0
+        cy = height / 2.0
+        return np.array([[fx, 0, cx],
+                         [0, fy, cy],
+                         [0, 0, 1]], dtype=np.float32)
+
+    def build_tartanair_intrinsics(self, num_images, width=640, height=640, focal=320.0):
         # original tartan air has fixed camera intrinsics
         fx = focal
         fy = focal
@@ -96,6 +125,11 @@ class TartanAirDataset(BaseDataset):
         camera_intrinsic = np.tile(one_intrinsic, (num_images, 1))
 
         return camera_intrinsic
+
+    def read_decode_depth(self, depthpath: str) -> np.ndarray:
+        depth_rgba = cv2.imread(depthpath, cv2.IMREAD_UNCHANGED)  # HxWx4 uint8
+        depth = depth_rgba.view("<f4")                            # reinterpret as float32
+        return np.squeeze(depth, axis=-1)                         # HxW float32 (meters)
 
     def get_data(
         self,
@@ -139,6 +173,11 @@ class TartanAirDataset(BaseDataset):
             # intrinsics
             num_images = len(camera_parameters)
             camera_intrinsic = self.build_tartanair_intrinsics(num_images=num_images)
+            # endpoint
+            #endpoint_file = camera_folder.replace("image", "endpoint") + ".txt"
+            #endpoint_path = osp.join(self.TartanAirDIR, scene, difficulty, traj, endpoint_file)
+            #camera_endpoints = np.loadtxt(endpoint_path)
+
         except Exception as e:
             logging.error(f"Error loading camera parameters for {seq_name}: {e}")
             raise      
@@ -161,13 +200,15 @@ class TartanAirDataset(BaseDataset):
         original_sizes = []
 
         for image_idx in ids:
-            cam_name = camera_folder.replace("image_", "") # lcam_bottom
-            image_filepath = osp.join(self.TartanAirDIR, seq_name, f"{image_idx:06d}_{camera_folder}.png")
-            depth_filepath = osp.join(self.TartanAirDIR, seq_name, f"{image_idx:06d}_{camera_folder}_depth.png")
+            cam_name = camera_folder.replace("image_", "") # e.g., "lcam_left"
+            image_filepath = osp.join(self.TartanAirDIR, seq_name, f"{image_idx:06d}_{cam_name}.png")
+            depth_folder = camera_folder.replace("image", "depth")
+            depth_filepath = osp.join(self.TartanAirDIR, scene, difficulty, traj, depth_folder, f"{image_idx:06d}_{cam_name}_depth.png")
 
             image = read_image_cv2(image_filepath)
-            depth_map = cv2.imread(depth_filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
-            depth_map = depth_map / 100
+            depth_rgba = cv2.imread(depth_filepath, cv2.IMREAD_UNCHANGED) # raw RGBA
+            depth_map = depth_rgba.view("<f4") # Convert the underlying memory (H, W, 4 * uint8) → (H, W, 1 * float32)
+            depth_map = np.squeeze(depth_map, axis=-1) # Remove the redundant last axis → (H, W)
             depth_map = threshold_depth_map(depth_map, max_percentile=-1, min_percentile=-1, max_depth=self.depth_max)
 
             assert image.shape[:2] == depth_map.shape, f"Image and depth shape mismatch: {image.shape[:2]} vs {depth_map.shape}"
@@ -175,8 +216,17 @@ class TartanAirDataset(BaseDataset):
             original_size = np.array(image.shape[:2])
 
             # Process camera matrices
-            extri_opencv = camera_parameters[image_idx][2:].reshape(4, 4)
-            extri_opencv = extri_opencv[:3]
+            t_world = camera_parameters[image_idx, :3]
+            x, y, z, w = camera_parameters[image_idx, 3:7]
+            R_cam_to_world = quat_to_rot_np(x, y, z, w)
+            R_world_to_cam = R_cam_to_world.T
+            t_world_to_cam = -R_world_to_cam @ t_world
+            P = np.array([[0, 1, 0],
+                          [0, 0, 1],
+                          [1, 0, 0]], dtype=R_world_to_cam.dtype)
+            R_world_to_cam_opencv = P @ R_world_to_cam
+            t_world_to_cam_opencv = P @ t_world_to_cam
+            extri_opencv = np.hstack([R_world_to_cam_opencv, t_world_to_cam_opencv.reshape(3,1)])
 
             intri_opencv = np.eye(3)
             intri_opencv[0, 0] = camera_intrinsic[image_idx][-4]
@@ -216,7 +266,7 @@ class TartanAirDataset(BaseDataset):
             point_masks.append(point_mask)
             original_sizes.append(original_size)
 
-        set_name = "vkitti"
+        set_name = "tartanair"
         batch = {
             "seq_name": set_name + "_" + seq_name,
             "ids": ids,

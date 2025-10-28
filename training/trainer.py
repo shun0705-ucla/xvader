@@ -33,6 +33,7 @@ import torch.nn as nn
 import torchvision
 from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
+import torchvision.utils as vutils
 
 from train_utils.checkpoint import DDPCheckpointSaver
 from train_utils.distributed import get_machine_local_and_dist_rank
@@ -211,9 +212,9 @@ class Trainer:
             logging.info(f"Model state loaded. Missing keys: {missing or 'None'}. Unexpected keys: {unexpected or 'None'}.")
 
         # Load optimizer state if available and in training mode
-        if "optimizer" in checkpoint:
-            logging.info(f"Loading optimizer state dict (rank {self.rank})")
-            self.optims.optimizer.load_state_dict(checkpoint["optimizer"])
+        #if "optimizer" in checkpoint:
+        #    logging.info(f"Loading optimizer state dict (rank {self.rank})")
+        #    self.optims.optimizer.load_state_dict(checkpoint["optimizer"])
 
         # Load training progress
         if "epoch" in checkpoint:
@@ -552,6 +553,7 @@ class Trainer:
             self.gradient_clipper.setup_clipping(self.model)
 
         for data_iter, batch in enumerate(train_loader):
+
             if data_iter > limit_train_batches:
                 break
             
@@ -562,6 +564,61 @@ class Trainer:
             
             with torch.cuda.amp.autocast(enabled=False):
                 batch = self._process_batch(batch)
+
+
+
+            '''
+            ################################# inside your training loop
+            save_dir = "debug_batches"
+            os.makedirs(save_dir, exist_ok=True)
+            if "images" in batch and batch["images"].numel() > 0:
+                imgs = batch["images"].detach().cpu()   # [B, S, C, H, W] or [B, C, H, W]
+
+                if imgs.dim() == 5:   # [B, S, C, H, W]
+                    B, S, C, H, W = imgs.shape
+                    for b in range(min(B, 2)):      # just save a couple to avoid spam
+                        for s in range(min(S, 10)):  # save first few frames
+                            fn = os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}.png")
+                            vutils.save_image(imgs[b, s], fn)
+                elif imgs.dim() == 4: # [B, C, H, W]
+                    B, C, H, W = imgs.shape
+                    for b in range(min(B, 4)):
+                        fn = os.path.join(save_dir, f"iter{data_iter:05d}_b{b}.png")
+                        vutils.save_image(imgs[b], fn)
+                print(f"Saved images for iter {data_iter}")
+            if "depths" in batch and batch["depths"].numel() > 0:
+                depths = batch["depths"].detach().cpu()  # [B, S, 1, H, W] or [B, 1, H, W]
+                if depths.dim() == 5:   # [B, S, 1, H, W]
+                    B, S, _, H, W = depths.shape
+                    for b in range(min(B, 2)):
+                        for s in range(min(S, 10)):
+                            depth = depths[b, s, 0].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_depth.npy"), depth)
+                elif depths.dim() == 4: # [B, S, H, W]
+                    B, S, H, W = depths.shape
+                    for b in range(min(B, 4)):
+                        for s in range(min(S, 10)):
+                            depth = depths[b, s].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_depth.npy"), depth)
+            if "point_masks" in batch and batch["point_masks"].numel() > 0:
+                masks = batch["point_masks"].detach().cpu()  # [B, S, 1, H, W] or [B, 1, H, W]
+                if masks.dim() == 5:   # [B, S, 1, H, W]
+                    B, S, _, H, W = masks.shape
+                    for b in range(min(B, 2)):
+                        for s in range(min(S, 10)):
+                            mask = masks[b, s, 0].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_mask.npy"), mask)
+                elif masks.dim() == 4: # [B, S, H, W]
+                    B, S, H, W = masks.shape
+                    for b in range(min(B, 4)):
+                        for s in range(min(S, 10)):
+                            mask = masks[b, s].numpy()
+                            np.save(os.path.join(save_dir, f"iter{data_iter:05d}_b{b}_s{s}_mask.npy"), mask)
+            
+            #####################################################################
+            '''
+
+            
 
             batch = copy_data_to_device(batch, self.device, non_blocking=True)
 
@@ -721,7 +778,7 @@ class Trainer:
         
         return batch
 
-    def _process_batch(self, batch: Mapping):      
+    def _process_batch(self, batch: Mapping):
         if self.data_conf.train.common_config.repeat_batch:
             batch = self._apply_batch_repetition(batch)
         
@@ -732,6 +789,7 @@ class Trainer:
                 cam_points=batch["cam_points"],
                 world_points=batch["world_points"],
                 depths=batch["depths"],
+                scale_extri_only=False,
                 point_masks=batch["point_masks"],
             )
 
@@ -751,7 +809,7 @@ class Trainer:
             A dictionary containing the computed losses.
         """
         # Forward pass
-        y_hat = model(images=batch["images"])
+        y_hat = model(images=batch["images"], intrinsics=batch["intrinsics"])
         
         # Loss computation
         loss_dict = self.loss(y_hat, batch)

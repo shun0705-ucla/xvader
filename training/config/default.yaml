@@ -2,13 +2,13 @@ defaults:
   - default_dataset.yaml
 
 exp_name: exp001
-img_size: 224
+img_size: 518 #476
 num_workers: 4
-seed_value: 42
+seed_value: 33
 accum_steps: 1    # We did not use gradient accumulation in our training, while if you suffer from OOM, you can try to use it.
 patch_size: 14
 val_epoch_freq: 5
-max_img_per_gpu: 128
+max_img_per_gpu: 7
 # img_size:224^2 / accum_steps:2 * max_img_per_gpu: 48 = VRAM:13GB
 
 limit_train_batches: 800
@@ -17,6 +17,23 @@ limit_val_batches: 400
 
 data:
   # The code for data still looks too complicated. I should refactor this again (do I have time?...)
+  #train:
+  #  _target_: data.dynamic_dataloader.DynamicTorchDataset
+  #  num_workers: ${num_workers}
+  #  max_img_per_gpu: ${max_img_per_gpu}
+  #  common_config:
+  #    img_size: ${img_size}
+  #    patch_size: ${patch_size}
+  #    debug: True
+  #    repeat_batch: False
+  #  dataset:
+  #    _target_: data.composed_dataset.ComposedDataset
+  #    dataset_configs:
+  #      - _target_: data.datasets.vkitti.VKittiDataset
+  #        split: train
+  #        len_train: 10000
+  #        len_test: 100
+  #        VKitti_DIR: ../dataset/vkitti
   train:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: ${num_workers}
@@ -29,9 +46,21 @@ data:
     dataset:
       _target_: data.composed_dataset.ComposedDataset
       dataset_configs:
+        - _target_: data.datasets.tartanair.TartanAirDataset
+          split: train
+          len_train: 10000
+          len_test: 100
+          TartanAir_DIR: ../dataset/TartanAir
+        - _target_: data.datasets.tartanair_synthe.TartanAirSyntheDataset
+          split: train
+          len_train: 10000
+          len_test: 100
+          TartanAir_DIR: ../dataset/TartanAir_Synthe
         - _target_: data.datasets.vkitti.VKittiDataset
           split: train
-          VKitti_DIR: vkitti
+          len_train: 10000
+          len_test: 100
+          VKitti_DIR: ../dataset/vkitti
   val:
     _target_: data.dynamic_dataloader.DynamicTorchDataset
     num_workers: ${num_workers}
@@ -45,7 +74,9 @@ data:
       dataset_configs:
         - _target_: data.datasets.vkitti.VKittiDataset
           split: test
-          VKitti_DIR: vkitti
+          len_train: 100
+          len_test: 10
+          VKitti_DIR: ../dataset/vkitti
 
 
 logging:
@@ -65,7 +96,7 @@ logging:
         - loss_camera
         - loss_T
         - loss_R
-        - loss_FL
+        #- loss_FL
         - loss_conf_depth
         - loss_reg_depth
         - loss_grad_depth
@@ -75,7 +106,7 @@ logging:
         - loss_camera
         - loss_T
         - loss_R
-        - loss_FL
+        #- loss_FL
         - loss_conf_depth
         - loss_reg_depth
         - loss_grad_depth
@@ -84,28 +115,31 @@ logging:
 
 checkpoint:
   save_dir: logs/${exp_name}/ckpts
-  save_freq: 5
-  resume_checkpoint_path: checkpoints/xvader_vitb_untrained.pt
-  strict: False
+  save_freq: 10
+  resume_checkpoint_path: logs/${exp_name}/ckpts/checkpoint.pt
+  #resume_checkpoint_path: checkpoints/xvader_vitl_pretrained.pt
+  #resume_checkpoint_path: checkpoints/vggt_vitl.pt
+  strict: True
 
 
 loss:
   _target_: loss.MultitaskLoss
   camera: 
-    weight: 5.0
+    weight: 3.0
     loss_type: "l1" # The paper uses smooth l1 loss, but we found l1 loss is more stable than smooth l1 and l2 loss.  
+    weight_rot: 5.0
   depth:
     weight: 1.0
-    gradient_loss_fn: "unuse" 
+    gradient_loss_fn: "grad" #"unuse" 
     valid_range: 0.98
     inv_depth_only: True
   point: null
   # If you want to enable point, use the following config
-  # point: 
-  #   weight: 1.0
-  #   gradient_loss_fn: "normal" 
-  #   valid_range: 0.98
-  track: null   
+  #point: 
+  #  weight: 1.0
+  #  gradient_loss_fn: "normal" 
+  #  valid_range: 0.98
+  #track: null   
 
 
 
@@ -115,13 +149,16 @@ optim:
 
   optimizer:
     _target_: torch.optim.AdamW
-    lr: 5e-5
-    weight_decay: 0.05
+    lr: 1e-5
+    weight_decay: 0.005
 
   frozen_module_names:
       #- "*aggregator*"  # example, freeze the aggregator
-      - "pretrained*"
-      - "depth_head*"
+      - "encoder*"
+      #- "camera_embed*"
+      #- "alternating_attention*"
+      #- "camera_head*"
+      #- "depth_head*"
 
   amp:
     enabled: True
@@ -162,11 +199,12 @@ optim:
 
 
 
-max_epochs: 2
+max_epochs: 50
 
 model:
   _target_: xvader.Xvader
-  encoder: 'vitb'
+  #_target_: third_party.vggt.vggt.models.vggt.VGGT
+  #encoder: 'vitl'
   #enable_camera: True
   #enable_depth: True
   #enable_point: False

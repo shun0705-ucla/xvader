@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xvader"
+version = "0.0.0"
+description = "xvader project"
+requires-python = ">=3.10"
+
+[tool.setuptools.packages.find]
+where = ["."]

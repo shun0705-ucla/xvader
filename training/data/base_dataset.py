@@ -301,3 +301,95 @@ class BaseDataset(Dataset):
         result_ids = np.insert(sampled_ids, 0, start_idx)
 
         return result_ids
+    
+    def compute_camera_endpoint(self,
+                                pose_list: np.ndarray,
+                                depth_list: list[np.ndarray],
+                                depth_max: float,
+                                K: np.ndarray | None = None,
+                                subsample: int = 4) -> np.ndarray:
+        """
+        Inputs:
+        pose_list: (N,7) [x y z qx qy qz qw], camera->world.
+        depth_list: list of N depth maps (HxW float32 (meters))
+        depth_max: max valid depth (e.g., 80.0).
+        K: 3x3 intrinsics (if provided, use centroid; else average-depth endpoint).
+        subsample: pixel stride for centroid backprojection.
+        Output:
+        (N,7): [px py pz  fx fy fz  d_eff]  (d_eff = ||descriptor - C||)
+        (px, py, pz): endpoint
+        (fx, fy, fz): forward direction
+        C: camera center, descriptor: representative 3D point for the image
+        """
+        N = min(len(pose_list), len(depth_list))
+        if len(pose_list) != len(depth_list):
+            print(f"[compute_camera_endpoint] Warning: length mismatch "
+                f"(poses={len(pose_list)}, depths={len(depth_list)}); using N={N}")
+
+        out = np.zeros((N, 7), dtype=np.float32)
+
+        use_centroid = (K is not None)
+
+        # Pre-extract intrinsics if centroid is on
+        if use_centroid:
+            fx, fy = float(K[0,0]), float(K[1,1])
+            cx, cy = float(K[0,2]), float(K[1,2])
+
+        for i in range(N):
+            # --- pose ---
+            x, y, z, qx, qy, qz, qw = pose_list[i].astype(np.float32, copy=False)
+            C   = np.array([x, y, z], dtype=np.float32)      # camera center
+            R   = quat_to_rot_np(qx, qy, qz, qw)                 # cam->world
+            fwd = forward_from_quat(qx, qy, qz, qw)
+
+            # --- depth + mask ---
+            valid = np.isfinite(depth_list[i]) & (depth_list[i] > 1e-3)
+            if depth_max is not None:
+                valid &= (depth_list[i] <= depth_max)
+
+            if use_centroid:
+                # Backproject valid subsampled pixels -> camera coords -> world coords
+                H, W = depth_list[i].shape
+                ys, xs = np.mgrid[0:H:subsample, 0:W:subsample]
+                z = depth_list[i][::subsample, ::subsample]
+                v = valid[::subsample, ::subsample]
+
+                if v.any():
+                    xs = xs[v].astype(np.float32); ys = ys[v].astype(np.float32)
+                    z  =  z[v].astype(np.float32)
+
+                    xcam = (xs - cx) / fx * z
+                    ycam = (ys - cy) / fy * z
+                    Xc   = np.stack([xcam, ycam, z], axis=1)     # (M,3) camera coords
+
+                    # cam->world: Xw = R @ Xc + C
+                    Xw = (R @ Xc.T).T + C[None, :]
+
+                    centroid = Xw.mean(axis=0)                    # (3,)
+                    endpoint = centroid
+                    d_eff    = np.linalg.norm(centroid - C)
+                else:
+                    # Fallback to robust avg along forward ray
+                    d_avg = float(robust_avg_depth_with_mask(depth_list[i], valid))
+                    endpoint = C + d_avg * fwd
+                    d_eff = d_avg
+            else:
+                # No K given: forward-ray endpoint using robust avg depth
+                d_avg = float(robust_avg_depth_with_mask(depth_list[i], valid))
+                endpoint = C + d_avg * fwd
+                d_eff = d_avg
+
+            # --- write row ---
+            out[i, 0:3] = endpoint.astype(np.float32)
+            out[i, 3:6] = fwd.astype(np.float32)
+            out[i, 6]   = np.float32(d_eff)
+
+        return out
+    
+    '''
+    def get_seq_by_endpoint_similarity(self, first_frame_idx, num_frames, list_camera_endpoint):
+        for i in range(num_frames):
+            sampled_ids = self.get_ids_by_endpoint_similarity(first_frame_idx, list_camera_endpoint)
+        result_ids = np.insert(sampled_ids, 0, first_frame_idx)
+        return result_ids
+    '''
