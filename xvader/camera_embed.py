@@ -1,11 +1,8 @@
 import torch
 import torch.nn as nn
 
-from third_party.UniDepth.unidepth.layers import (MLP, AttentionBlock, AttentionLayer, PositionEmbeddingSine)
-from third_party.UniDepth.unidepth.utils.camera import BatchCamera, Camera, Pinhole
-from third_party.UniDepth.unidepth.utils.geometric import flat_interpolate
-from third_party.UniDepth.unidepth.utils.positional_embedding import generate_fourier_features
-from .xvader_utils import map_to_flat
+from unidepth.layers import (MLP, AttentionBlock, AttentionLayer, PositionEmbeddingSine)
+from unidepth.utils.positional_embedding import generate_fourier_features
 
 
 class CameraEmbedding(nn.Module):

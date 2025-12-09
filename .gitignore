@@ -207,14 +207,17 @@ marimo/_lsp/
 __marimo__/
 .vscode/
 checkpoints/
-image/
-kitti_vit_518/
+debug_batches/
+evaluation/
+kitti_clipsize_10/
+komatsu_data/
+komatsu_data (copy)/
 logs/
 output/
 ref/
-vkitti/
-scripts/
-utils/
-debug_batches/
-kitti_clipsize_10/
+supplemental_video/
+test_scripts/
+trash/
 ue5_paired_data/
+
+*.onnx

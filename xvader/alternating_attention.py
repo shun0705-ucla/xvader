@@ -5,8 +5,8 @@ from torch.utils.checkpoint import checkpoint
 
 from typing import Tuple, List
 
-from third_party.vggt.vggt.layers.block import Block
-from third_party.vggt.vggt.layers.rope import RotaryPositionEmbedding2D, PositionGetter
+from vggt.layers.block import Block
+from vggt.layers.rope import RotaryPositionEmbedding2D, PositionGetter
 
 
 class AlternatingAttention(nn.Module):

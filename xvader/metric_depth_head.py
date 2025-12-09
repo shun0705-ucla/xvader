@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from third_party.UniDepth.unidepth.layers import (MLP, AttentionBlock, AttentionLayer, PositionEmbeddingSine, ResUpsampleBil)
+from unidepth.layers import (MLP, AttentionBlock, AttentionLayer, PositionEmbeddingSine, ResUpsampleBil)
 from .xvader_utils import flat_to_map, map_to_flat
 
 class MetricDepthHead(nn.Module):

@@ -4,7 +4,7 @@ defaults:
 exp_name: exp001
 img_size: 518 #476
 num_workers: 4
-seed_value: 33
+seed_value: 38
 accum_steps: 1    # We did not use gradient accumulation in our training, while if you suffer from OOM, you can try to use it.
 patch_size: 14
 val_epoch_freq: 5
@@ -116,7 +116,7 @@ logging:
 checkpoint:
   save_dir: logs/${exp_name}/ckpts
   save_freq: 10
-  resume_checkpoint_path: logs/${exp_name}/ckpts/checkpoint.pt
+  resume_checkpoint_path: logs/${exp_name}/ckpts/checkpoint_30.pt
   #resume_checkpoint_path: checkpoints/xvader_vitl_pretrained.pt
   #resume_checkpoint_path: checkpoints/vggt_vitl.pt
   strict: True

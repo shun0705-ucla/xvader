@@ -2,15 +2,11 @@ import cv2
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass
 
-#from third_party.UniDepth.unidepth.models.backbones.dinov2 import _make_dinov2_model
-from third_party.vggt.vggt.layers.vision_transformer import vit_small, vit_base, vit_large
+from vggt.layers.vision_transformer import vit_small, vit_base, vit_large
 from .metric_depth_head import MetricDepthHead
 from .camera_embed import CameraEmbedding
 from .camera_model import Pinhole
-#from third_party.UniDepth.unidepth.utils.camera import BatchCamera, Camera, Pinhole
-from third_party.vggt.vggt.utils.rotation import quat_to_mat
 
 from .xvader_utils import flat_to_map, map_to_flat
 
@@ -43,22 +39,6 @@ class Xvader(nn.Module):
             raise ValueError(f"Unknown encoder '{encoder}'. Supported: {list(self.intermediate_layer_idx_list.keys())}")
         '''
         # patch embed
-        '''
-        self.encoder = _make_dinov2_model(arch_name = "vit_large",
-                                             img_size = 518,
-                                             patch_size = 14,
-                                             init_values = 1.0,
-                                             ffn_layer = "mlp",
-                                             block_chunks = 0,
-                                             pretrained = None,
-                                             output_idx = [5, 11, 17, 23],
-                                             num_register_tokens = 4,
-                                             drop_path_rate = 0.0,
-                                             use_norm = True,
-                                             export = False,
-                                             interpolate_offset = 0.0,
-                                             frozen_stages = 0)
-        '''
         self.encoder = vit_large(img_size=518,
                                  patch_size=14,
                                  num_register_tokens=4,
@@ -218,8 +198,14 @@ class Xvader(nn.Module):
         K_resized = _scale_intrinsics(intrinsics, sx=sx, sy=sy)
 
         outputs = self.forward(images_resized, K_resized)
+        # depth: (B,S,H,W,1) -> resize -> (B,S,1,H,W)
         depth = _resize_back(outputs["depth"].permute(0,1,4,2,3))
-        return depth
+
+        depth_conf = outputs["depth_conf"].unsqueeze(2)      # (B,S,1,Ht,Wt)
+        depth_conf = _resize_back(depth_conf)                # (B,S,1,H,W)
+        depth_conf = depth_conf.squeeze(2)                   # (B,S,H,W)
+
+        return depth, depth_conf
     
 
 

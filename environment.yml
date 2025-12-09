@@ -1,0 +1,50 @@
+name: xvader_test
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - git
+  - pip:
+      - torch==2.8.0
+      - torchvision==0.23.0
+      - torchaudio==2.8.0
+      - numpy==2.2.6
+      - pillow==11.3.0
+      - huggingface-hub==0.34.1
+      - safetensors
+      - iopath
+      - wcmatch
+      - tensorboard
+      - fvcore
+      # vggt dependency
+      - gradio==5.17.1
+      - viser==0.2.23
+      - tqdm
+      - hydra-core
+      - omegaconf
+      - opencv-python
+      - scipy
+      - onnxruntime
+      - requests
+      - trimesh
+      - matplotlib
+      - pydantic==2.10.6
+      # unidepth dependency
+      - einops>=0.7.0
+      - h5py>=3.10.0
+      - imageio
+      - pandas
+      - protobuf>=4.25.3
+      - tables
+      - tabulate
+      - termcolor
+      - timm
+      - triton>=2.4.0
+      - wandb
+      - xformers>=0.0.26
+
+      # due to dependency issues, install vggt and unidepth manually
+      # pip install "vggt@git+https://github.com/facebookresearch/vggt.git" --no-deps
+      # pip install "unidepth@git+https://github.com/lpiccinelli-eth/UniDepth.git" --no-deps

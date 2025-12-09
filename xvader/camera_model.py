@@ -9,8 +9,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from third_party.UniDepth.unidepth.utils.coordinate import coords_grid
-from third_party.UniDepth.unidepth.utils.camera import BatchCamera
+from unidepth.utils.coordinate import coords_grid
+from unidepth.utils.camera import BatchCamera
 
 
 def invert_pinhole(K):
