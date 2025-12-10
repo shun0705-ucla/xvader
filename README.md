@@ -23,6 +23,37 @@ Finally, the depth and camera heads predict dense depth maps and camera poses in
 
 <img src="assets/XVADER_qualitative_comparison.jpg">
 
-## Demo
+## Installation
 
-under construction.
+Tested on:
+
+- **Ubuntu 22.04**
+- CUDA-compatible GPU required for inference
+
+### 1. Clone the repository
+```bash
+git clone https://github.com/shun0705-ucla/xvader.git
+```
+### 2. Create the Conda environment and install dependencies
+```bash
+cd xvader
+conda env create -f environment.yml
+
+# External repos
+pip install "vggt@git+https://github.com/facebookresearch/vggt.git" --no-deps
+pip install "unidepth@git+https://github.com/lpiccinelli-eth/UniDepth.git" --no-deps
+
+# Install XVADER package
+pip install -e .
+```
+
+### 3. Download the pretrained checkpoint
+```bash
+bash download_checkpoint.sh
+```
+
+## Demo
+Run the full XVADER demo pipeline:
+```bash
+bash demo.sh
+```

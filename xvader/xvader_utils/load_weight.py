@@ -1,5 +1,8 @@
 import torch
+import os
 from typing import Dict, Tuple, Optional, Iterable
+import shutil
+from huggingface_hub import hf_hub_download
 
 def _is_raw_state_dict(d: Dict) -> bool:
     """Heuristic: looks like a param-name -> Tensor mapping."""
@@ -140,3 +143,65 @@ def load_checkpoint_into_model(
             print("[load_checkpoint_into_model] Perfect match ✅")
 
     return (missing, unexpected), sd
+
+
+def resolve_checkpoint(checkpoint_arg: str) -> str:
+    """
+    Resolve a checkpoint string. Supports:
+      - local files
+      - hf://repo_id/filename
+      - hf://repo_id/filename@revision
+    Returns a local filepath.
+    """
+    # 1) If file exists locally → return directly
+    if os.path.isfile(checkpoint_arg):
+        print(f"[INFO] Using local checkpoint: {checkpoint_arg}")
+        return checkpoint_arg
+
+    # 2) HF format: hf://repo_id/filename or hf://repo_id/filename@revision
+    if checkpoint_arg.startswith("hf://"):
+        spec = checkpoint_arg[len("hf://"):]  # strip prefix
+        
+        # Extract optional revision
+        if "@" in spec:
+            path_part, revision = spec.split("@", 1)
+        else:
+            path_part, revision = spec, None
+
+        # repo_id is everything except the last item
+        parts = path_part.split("/")
+        repo_id = "/".join(parts[:-1])
+        filename = parts[-1]
+
+        print(f"[INFO] Downloading from HuggingFace:")
+        print(f"       repo_id = {repo_id}")
+        print(f"       filename = {filename}")
+        print(f"       revision = {revision}")
+
+        ckpt_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            revision=revision,
+        )
+        print(f"[INFO] HF checkpoint resolved to local file: {ckpt_path}")
+        return ckpt_path
+
+    # 3) Unknown format
+    raise ValueError(
+        f"Invalid checkpoint argument: {checkpoint_arg}\n"
+        f"Expected a local file or hf://repo/filename[@revision]"
+    )
+
+def save_checkpoint(url: str, output_path: str):
+    cached_path = resolve_checkpoint(url)
+
+    # Handle cases where output_path has no directory (e.g. "checkpoint.pt")
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    # Copy bytes from cached_path → output_path
+    shutil.copy2(cached_path, output_path)
+
+    print(f"[INFO] Source checkpoint: {cached_path}")
+    print(f"[INFO] Checkpoint copied to: {output_path}")

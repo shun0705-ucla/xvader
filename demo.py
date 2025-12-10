@@ -9,10 +9,12 @@ from PIL import Image
 import matplotlib
 
 from xvader.xvader import Xvader
-from xvader.xvader_utils.load_weight import load_checkpoint_into_model
+from xvader.xvader_utils.load_weight import load_checkpoint_into_model, resolve_checkpoint
 from xvader.xvader_utils.xvader_utils import preprocess_image_for_vit, depth_rgb_to_colored_point_cloud, save_pointcloud_pcd_xyzrgb
 from xvader.xvader_utils.skyseg import get_sky_keep_mask, load_skyseg_session
 from unidepth.models import UniDepthV2
+
+
 
 
 def colorize_and_save_depth(depth: np.ndarray, out_path_png: str, out_path_npy: str):
@@ -48,10 +50,11 @@ def run_demo(args):
 
     ############ Load model ###############
     model = Xvader(encoder="vitl")
-    print(f"[INFO] Loading model from: {args.checkpoint}")
+
+    ckpt_path = resolve_checkpoint(args.checkpoint)
     compat, _sd = load_checkpoint_into_model(
         model,
-        args.checkpoint,
+        ckpt_path,
         device=device,
         strict=True,        # keep strict=True to catch real mismatches
         prefer_ema=False,   # set True if you want EMA weights when present
