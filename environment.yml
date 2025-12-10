@@ -1,4 +1,4 @@
-name: xvader_test
+name: xvader
 channels:
   - conda-forge
   - defaults

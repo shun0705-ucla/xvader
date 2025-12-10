@@ -38,6 +38,7 @@ git clone https://github.com/shun0705-ucla/xvader.git
 ```bash
 cd xvader
 conda env create -f environment.yml
+conda activate xvader
 
 # External repos
 pip install "vggt@git+https://github.com/facebookresearch/vggt.git" --no-deps
